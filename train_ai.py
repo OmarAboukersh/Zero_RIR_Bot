@@ -26,7 +26,7 @@ EXERCISE_CONFIG_KEYS = [
     "Preacher curl single arm (machine)", "Preacher Curl (Machine)"
 ]
 
-MIN_ROWS = 20  # Minimum data points required to train a model
+MIN_SESSIONS = 6  # Minimum sessions required (need at least 5 after shifting + 1 for test)
 
 def safe_filename(name):
     """Convert exercise name to a safe filename."""
@@ -36,19 +36,10 @@ def load_and_clean_data(file_path):
     """Load CSV and engineer base features."""
     df = pd.read_csv(file_path)
     df = df.dropna(subset=['weight_kg', 'reps'])
-    
-    # Only use normal working sets
     df = df[df['set_type'] == 'normal']
-    
     df['set_volume'] = df['weight_kg'] * df['reps']
     df['start_time'] = pd.to_datetime(df['start_time'])
     df = df.sort_values('start_time')
-    
-    # Engineer session_number per exercise (sequential workout count)
-    df['session_id'] = df.groupby('exercise_title')['start_time'].transform(
-        lambda x: x.dt.date.factorize()[0] + 1
-    )
-    
     return df
 
 def find_csv_match(exercise_name, csv_exercises):
@@ -57,14 +48,41 @@ def find_csv_match(exercise_name, csv_exercises):
     for csv_name in csv_exercises:
         if csv_name.lower().strip() == norm:
             return csv_name
-    # Fuzzy substring fallback
     for csv_name in csv_exercises:
         if norm in csv_name.lower() or csv_name.lower() in norm:
             return csv_name
     return None
 
+def build_session_features(ex_data):
+    """Aggregate set-level data into session-level features.
+    
+    Returns a DataFrame with one row per session:
+      - avg_reps, max_weight, total_volume, num_sets, session_number
+      - next_session_weight (target: what weight was used NEXT session)
+    """
+    ex_data = ex_data.copy()
+    ex_data['session_date'] = ex_data['start_time'].dt.date
+    
+    sessions = ex_data.groupby('session_date').agg(
+        avg_reps=('reps', 'mean'),
+        max_weight=('weight_kg', 'max'),
+        total_volume=('set_volume', 'sum'),
+        num_sets=('reps', 'count')
+    ).reset_index().sort_values('session_date')
+    
+    # Sequential session number
+    sessions['session_number'] = range(1, len(sessions) + 1)
+    
+    # FORWARD-LOOKING TARGET: the max weight used in the NEXT session
+    sessions['next_session_weight'] = sessions['max_weight'].shift(-1)
+    
+    # Drop the last row (no next session to predict)
+    sessions = sessions.dropna(subset=['next_session_weight'])
+    
+    return sessions
+
 def train_all_models():
-    """Train a RandomForest for every tracked exercise and save to disk."""
+    """Train a forward-looking RandomForest for every tracked exercise."""
     os.makedirs(MODELS_DIR, exist_ok=True)
     
     df = load_and_clean_data(CSV_FILE)
@@ -75,10 +93,11 @@ def train_all_models():
     skipped = 0
     
     print("=" * 60)
-    print("  ZERO RIR BOT — ML MODEL TRAINING PIPELINE")
+    print("  ZERO RIR BOT — FORWARD-LOOKING ML TRAINING PIPELINE")
     print("=" * 60)
     print(f"  CSV loaded: {len(df)} normal working sets across {len(csv_exercises)} exercises")
     print(f"  Training models for {len(EXERCISE_CONFIG_KEYS)} tracked exercises...")
+    print(f"  Target: Predict NEXT session's weight (forward-looking)")
     print("=" * 60)
     
     for exercise_name in EXERCISE_CONFIG_KEYS:
@@ -90,15 +109,17 @@ def train_all_models():
             continue
         
         ex_data = df[df['exercise_title'] == csv_name].copy()
+        sessions = build_session_features(ex_data)
         
-        if len(ex_data) < MIN_ROWS:
-            print(f"\n  SKIP: '{exercise_name}' — only {len(ex_data)} rows (need {MIN_ROWS})")
+        if len(sessions) < MIN_SESSIONS:
+            print(f"\n  SKIP: '{exercise_name}' — only {len(sessions)} sessions (need {MIN_SESSIONS})")
             skipped += 1
             continue
         
-        # Features: reps, set_volume, session_number
-        X = ex_data[['reps', 'set_volume', 'session_id']]
-        y = ex_data['weight_kg']
+        # Features: current session's performance
+        feature_cols = ['avg_reps', 'max_weight', 'total_volume', 'num_sets', 'session_number']
+        X = sessions[feature_cols]
+        y = sessions['next_session_weight']
         
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42
@@ -119,7 +140,8 @@ def train_all_models():
         metadata[exercise_name] = {
             "model_file": model_filename,
             "csv_name": csv_name,
-            "rows": len(ex_data),
+            "sessions": len(sessions),
+            "feature_cols": feature_cols,
             "mse": round(mse, 3),
             "rmse_kg": round(rmse, 2),
             "trained_on": pd.Timestamp.now().isoformat()
@@ -127,7 +149,7 @@ def train_all_models():
         
         trained += 1
         print(f"\n  OK: '{exercise_name}'")
-        print(f"      Rows: {len(ex_data)} | RMSE: {rmse:.2f}kg | Saved: {model_filename}")
+        print(f"      Sessions: {len(sessions)} | RMSE: {rmse:.2f}kg | Saved: {model_filename}")
     
     # Save metadata
     with open(METADATA_FILE, "w", encoding="utf-8") as f:

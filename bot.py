@@ -99,8 +99,8 @@ MODEL_METADATA_FILE = os.path.join(MODELS_DIR, "model_metadata.json")
 def _safe_filename(name):
     return re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') + ".pkl"
 
-def get_ml_prediction(exercise_name, reps, set_volume):
-    """Load a trained RandomForest model and predict target weight.
+def get_ml_prediction(exercise_name, avg_reps, max_weight, total_volume, num_sets):
+    """Load a trained forward-looking RandomForest model and predict NEXT session weight.
     Returns (predicted_weight, rmse) or (None, None) if no model exists."""
     model_path = os.path.join(MODELS_DIR, _safe_filename(exercise_name))
     
@@ -117,15 +117,84 @@ def get_ml_prediction(exercise_name, reps, set_volume):
                 rmse = meta[exercise_name].get("rmse_kg")
         
         model = joblib.load(model_path)
-        # Features must match training: [reps, set_volume, session_id]
-        # We use session_id=999 (high value) to represent "current / latest session"
+        # Features must match training: [avg_reps, max_weight, total_volume, num_sets, session_number]
+        # session_number=999 represents the latest/current position in your training history
         import pandas as pd
-        X = pd.DataFrame([[reps, set_volume, 999]], columns=['reps', 'set_volume', 'session_id'])
+        X = pd.DataFrame(
+            [[avg_reps, max_weight, total_volume, num_sets, 999]],
+            columns=['avg_reps', 'max_weight', 'total_volume', 'num_sets', 'session_number']
+        )
         prediction = model.predict(X)[0]
         return round(prediction, 1), rmse
     except Exception as e:
         print(f"ML prediction error for {exercise_name}: {e}")
         return None, None
+
+TRAIN_COUNTER_FILE = "train_counter.txt"
+RETRAIN_EVERY_N = 10  # Retrain models after every N new workouts
+
+def append_workout_to_csv(workout_name, workout_description, exercises_data):
+    """Append the current workout's set data to workouts.csv so the ML stays current."""
+    csv_path = "workouts.csv"
+    
+    now_str = datetime.datetime.now().strftime("%b %d, %Y, %I:%M %p")
+    rows = []
+    
+    for ex_name, sets_data in exercises_data:
+        for i, s in enumerate(sets_data):
+            rows.append({
+                "title": workout_name,
+                "start_time": now_str,
+                "end_time": now_str,
+                "description": workout_description or "",
+                "exercise_title": ex_name,
+                "superset_id": "",
+                "exercise_notes": "",
+                "set_index": i,
+                "set_type": s.get('type', 'normal'),
+                "weight_kg": s.get('weight_kg', ''),
+                "reps": s.get('reps', ''),
+                "distance_km": "",
+                "duration_seconds": "",
+                "rpe": s.get('rpe', '')
+            })
+    
+    if not rows:
+        return
+    
+    import pandas as pd
+    new_df = pd.DataFrame(rows)
+    
+    # Append (write header only if file doesn't exist)
+    write_header = not os.path.exists(csv_path)
+    new_df.to_csv(csv_path, mode='a', header=write_header, index=False)
+    print(f"📝 Appended {len(rows)} sets to {csv_path}")
+
+def auto_retrain_if_needed():
+    """Check if enough new workouts have been processed to trigger a retrain."""
+    count = 0
+    if os.path.exists(TRAIN_COUNTER_FILE):
+        try:
+            with open(TRAIN_COUNTER_FILE, "r") as f:
+                count = int(f.read().strip())
+        except:
+            count = 0
+    
+    count += 1
+    
+    if count >= RETRAIN_EVERY_N:
+        print(f"🔄 Auto-retrain triggered ({count} new workouts since last training)...")
+        try:
+            from train_ai import train_all_models
+            train_all_models()
+            count = 0  # Reset counter after successful retrain
+        except Exception as e:
+            print(f"⚠️ Auto-retrain failed: {e}")
+    else:
+        print(f"📊 ML retrain counter: {count}/{RETRAIN_EVERY_N}")
+    
+    with open(TRAIN_COUNTER_FILE, "w") as f:
+        f.write(str(count))
 
 def evaluate_exercise(name, current_weight, sets_data, config, prior_sessions, date_str):
     ceiling = config["ceiling"]
@@ -299,6 +368,7 @@ def main():
     exercises = recent_workout.get('exercises', [])
     history = load_history()
     next_plan = []
+    exercises_for_csv = []
     
     date_str = datetime.datetime.now().strftime("%Y-%m-%d")
     
@@ -349,13 +419,17 @@ def main():
 
         math_plan['rationale'] += f"\n   └ {ai_verdict}"
         
-        # --- 3. THE AI (ML): RandomForest weight prediction from CSV history ---
+        # --- 3. THE AI (ML): RandomForest forward-looking prediction ---
         avg_reps = sum(s['reps'] for s in sets_data) / len(sets_data)
-        avg_vol = current_weight * avg_reps
-        ml_weight, ml_rmse = get_ml_prediction(name, avg_reps, avg_vol)
+        total_volume = current_weight * sum(s['reps'] for s in sets_data)
+        ml_weight, ml_rmse = get_ml_prediction(name, avg_reps, current_weight, total_volume, len(sets_data))
         if ml_weight is not None:
             rmse_str = f" (±{ml_rmse}kg)" if ml_rmse else ""
-            math_plan['rationale'] += f"\n   └ 🤖 ML Model: Predicted target weight {ml_weight}kg{rmse_str}"
+            math_plan['rationale'] += f"\n   └ 🤖 ML Forecast: Next session predicted at {ml_weight}kg{rmse_str}"
+        
+        # Collect raw set data for CSV append
+        raw_sets = ex.get('sets', [])
+        exercises_for_csv.append((name, raw_sets))
         
         next_plan.append(math_plan)
 
@@ -370,6 +444,13 @@ def main():
         
         # 3. Save to persistent memory for morning delivery
         save_upcoming_targets(workout_name, message_text)
+        
+        # 4. Auto-append workout data to CSV for ML retraining
+        workout_description = str(recent_workout.get('description', ''))
+        append_workout_to_csv(workout_name, workout_description, exercises_for_csv)
+        
+        # 5. Auto-retrain ML models if enough new data has accumulated
+        auto_retrain_if_needed()
         
         save_last_processed_id(workout_id)
 

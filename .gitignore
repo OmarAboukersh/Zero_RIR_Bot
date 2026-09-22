@@ -8,6 +8,7 @@ upcoming_targets.json
 last_workout.txt
 error_log.txt
 morning_delivery_log.txt
+train_counter.txt
 
 # Trained ML models (machine-specific)
 models/

@@ -77,12 +77,14 @@ def generate_blueprint_from_csv(split_name):
         df = pd.read_csv("workouts.csv")
         df['start_time'] = pd.to_datetime(df['start_time'])
         
-        # Get all rows for this split
+        # Get all rows for this split, excluding deload sessions
         split_df = df[df['title'].str.strip() == split_name].copy()
+        if 'description' in split_df.columns:
+            split_df = split_df[~split_df['description'].fillna('').str.lower().str.contains('deload')]
         if split_df.empty:
             return None
         
-        # Find the most recent session date for this split
+        # Find the most recent NON-deload session date for this split
         latest_date = split_df['start_time'].max()
         latest_session = split_df[split_df['start_time'] == latest_date]
         

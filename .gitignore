@@ -1,1 +1,15 @@
-exercise_history.json 
+# Environment secrets
+.env
+*.env
+
+# State and local runtime files
+exercise_history.json
+upcoming_targets.json
+last_workout.txt
+error_log.txt
+morning_delivery_log.txt
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class

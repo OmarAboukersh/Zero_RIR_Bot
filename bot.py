@@ -3,10 +3,15 @@ import json
 import os
 import math
 
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 # --- CREDENTIALS ---
-TELEGRAM_BOT_TOKEN = ""
-TELEGRAM_CHAT_ID = ""
-HEVY_API_KEY = ""
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+HEVY_API_KEY = os.getenv("HEVY_API_KEY", "")
 
 STATE_FILE = "exercise_history.json"
 
@@ -134,15 +139,12 @@ def evaluate_exercise(name, current_weight, sets_data, config, history):
     
     return result
 
-def send_telegram_message(workout_name, workout_plan):
-    """Formats and fires the final blueprint to Telegram with an increase summary."""
-    
-    # Separate the exercises that got a weight increase
+def format_telegram_message(workout_name, workout_plan):
+    """Formats the final blueprint text with an increase summary."""
     increases = [item for item in workout_plan if "mathematically increased" in item['rationale']]
     
     message = f"🚨 **Next '{workout_name}' Targets (0 RIR)** 🚨\n\n"
     
-    # 1. The Top Summary (Only shows if you actually increased something)
     if increases:
         message += "📈 **WEIGHT INCREASES:**\n"
         for item in increases:
@@ -152,12 +154,15 @@ def send_telegram_message(workout_name, workout_plan):
         
     message += "📋 **DETAILED TARGETS:**\n\n"
     
-    # 2. The Full Breakdown ("Everything that's good")
     for item in workout_plan:
         message += f"**{item['exercise']}**\n"
         message += f"🎯 Target: {item['next_weight']}kg for {item['target_sets']} sets ({item['target_reps']} reps)\n"
         message += f"💡 {item['rationale']}\n\n"
         
+    return message
+
+def send_telegram_message_text(message):
+    """Fires the exact message text to Telegram."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
     
@@ -167,49 +172,129 @@ def send_telegram_message(workout_name, workout_plan):
     else:
         print(f"❌ Telegram Error: {response.text}")
 
-def main():
-    print("Initiating Zero RIR Progression Engine...")
-    recent_workout = get_latest_workout()
+def save_upcoming_targets(workout_name, message_text):
+    """Saves the formatted targets into a JSON memory state tagged by standard workout split."""
+    target_file = "upcoming_targets.json"
     
+    # Categorize exactly to match the user's weekly split keys:
+    # "Push", "Pull", "Push + Quads", "Pull + Ham"
+    w_lower = workout_name.lower()
+    
+    # Simple logic to determine the standard key:
+    if "push" in w_lower and "quad" in w_lower:
+        standard_key = "Push + Quads"
+    elif "push" in w_lower:
+        standard_key = "Push"
+    elif "pull" in w_lower and "ham" in w_lower:
+        standard_key = "Pull + Ham"
+    elif "pull" in w_lower:
+        standard_key = "Pull"
+    else:
+        standard_key = workout_name  # Fallback to the exact Hevy name
+
+    # Load existing
+    targets = {}
+    if os.path.exists(target_file):
+        try:
+            with open(target_file, "r", encoding="utf-8") as f:
+                targets = json.load(f)
+        except:
+            pass
+
+    # Save new
+    targets[standard_key] = message_text
+    
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(targets, f, indent=4, ensure_ascii=False)
+    
+    print(f"💾 Saved targets for '{standard_key}' to {target_file}")
+
+def get_last_processed_id():
+    if os.path.exists("last_workout.txt"):
+        with open("last_workout.txt", "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return None
+
+def save_last_processed_id(workout_id):
+    with open("last_workout.txt", "w", encoding="utf-8") as f:
+        f.write(workout_id)
+
+def main():
+    recent_workout = get_latest_workout()
     if not recent_workout:
-        print("❌ No workout returned from Hevy.")
+        return
+
+    workout_id = str(recent_workout.get('id', ''))
+    last_id = get_last_processed_id()
+    
+    if workout_id == last_id and workout_id != '':
         return
 
     workout_name = recent_workout.get('name', recent_workout.get('title', 'Workout'))
+    
+    # --- AI NLP: Read Hevy notes for deload commands ---
+    workout_notes = str(recent_workout.get('description', '')).lower()
+    is_intentional_deload = "deload" in workout_notes
+
     exercises = recent_workout.get('exercises', [])
-    
-    print(f"✅ Successfully pulled workout: '{workout_name}'")
-    print(f"🔍 Found {len(exercises)} exercises in this workout. Checking them...")
-    
     history = load_history()
     next_plan = []
     
     for ex in exercises:
-        # Hevy API sometimes places the title directly, or nests it inside an 'exercise' object
         name = ex.get('title', ex.get('exercise', {}).get('title', 'Unknown Exercise')).strip()
         
-        print(f"  -> Found in Hevy: '{name}'")
-        
         if name not in EXERCISE_CONFIG:
-            print(f"      ⚠️ Skipped: Name doesn't perfectly match EXERCISE_CONFIG.")
             continue
             
         sets_data = [s for s in ex.get('sets', []) if s.get('type', 'normal') == 'normal']
         if not sets_data:
-            print(f"      ⚠️ Skipped: No normal working sets found.")
             continue
             
         current_weight = sets_data[0].get('weight_kg', 0)
         
-        plan = evaluate_exercise(name, current_weight, sets_data, EXERCISE_CONFIG[name], history)
-        next_plan.append(plan)
-        print(f"      ✅ Successfully calculated progression!")
+        # --- 1. THE MATH: Run your standard double-progression ---
+        math_plan = evaluate_exercise(name, current_weight, sets_data, EXERCISE_CONFIG[name], history)
+        
+        # --- 2. THE AI: Analyze JSON history for plateaus ---
+        past_sessions = history.get(name, [])
+        ai_verdict = ""
+        
+        if is_intentional_deload:
+            ai_verdict = "🟢 AI: Intentional deload recognized from notes."
+        elif len(past_sessions) >= 3:
+            # Compare the earliest stored session to the most recent stored session
+            # (Assuming your history saves a 'weight' and 'reps' or 'volume' key)
+            try:
+                vol_old = past_sessions[-3].get('weight', 0) * past_sessions[-3].get('reps', 0)
+                vol_recent = past_sessions[-1].get('weight', 0) * past_sessions[-1].get('reps', 0)
+                
+                if vol_recent <= vol_old and vol_recent > 0:
+                    ai_verdict = "🚨 AI: Plateau detected (Volume stagnation)."
+                else:
+                    ai_verdict = "📈 AI: Upward momentum confirmed."
+            except:
+                ai_verdict = "🔍 AI: Tracking volume trends..."
+        else:
+            ai_verdict = "🔍 AI: Gathering baseline data (needs 3 sessions)."
+
+        # --- 3. COMBINE: Staple the AI verdict under the Math targets ---
+        # --- 3. COMBINE: Staple the AI verdict under the Math targets ---
+        math_plan['rationale'] += f"\n   └ {ai_verdict}"
+        next_plan.append(math_plan)
 
     if next_plan:
         save_history(history)
-        send_telegram_message(workout_name, next_plan)
-    else:
-        print("\n❌ No messages to send. None of the exercises matched your config list.")
+        
+        # 1. Format the blueprint text
+        message_text = format_telegram_message(workout_name, next_plan)
+        
+        # 2. Send immediately
+        send_telegram_message_text(message_text)
+        
+        # 3. Save to persistent memory for morning delivery
+        save_upcoming_targets(workout_name, message_text)
+        
+        save_last_processed_id(workout_id)
 
 if __name__ == "__main__":
     main()

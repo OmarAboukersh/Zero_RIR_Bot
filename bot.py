@@ -2,6 +2,17 @@ import requests
 import json
 import os
 import math
+import datetime
+
+def normalize_name(name):
+    return name.lower().strip()
+
+def match_exercise_config(hevy_name):
+    hevy_norm = normalize_name(hevy_name)
+    for config_name in EXERCISE_CONFIG.keys():
+        if normalize_name(config_name) in hevy_norm or hevy_norm in normalize_name(config_name):
+            return config_name
+    return None
 
 from dotenv import load_dotenv
 
@@ -79,17 +90,21 @@ def get_latest_workout():
     print(f"❌ Failed to pull from Hevy. Status Code: {response.status_code}")
     return None
 
-def evaluate_exercise(name, current_weight, sets_data, config, history):
+def evaluate_exercise(name, current_weight, sets_data, config, prior_sessions, date_str):
     ceiling = config["ceiling"]
     step = config["step"]
-    prior = history.get(name)
-
-    max_rir = max(s.get('rir', 0) for s in sets_data)
+    
+    prior = prior_sessions[-1] if prior_sessions else None
+    
+    rirs = [s.get('rir', 0) for s in sets_data]
+    last_set_rir = rirs[-1] if rirs else 0
+    high_rir_count = sum(1 for r in rirs if r >= 2)
+    
     total_reps = sum(s['reps'] for s in sets_data)
     regression_streak = prior.get("regression_streak", 0) if prior else 0
     
-    if prior and prior["weight"] == current_weight:
-        rep_drop = sum(prior["reps"]) - total_reps
+    if prior and prior.get("weight") == current_weight:
+        rep_drop = sum(prior.get("reps", [])) - total_reps
         if rep_drop >= 3:
             regression_streak += 1
         else:
@@ -97,8 +112,11 @@ def evaluate_exercise(name, current_weight, sets_data, config, history):
     else:
         regression_streak = 0
 
-    deload = max_rir >= 2 or regression_streak >= 2
+    deload = (last_set_rir >= 2) or (high_rir_count >= math.ceil(len(rirs) / 2)) or (regression_streak >= 2)
+    
+    historical_sets = len(prior.get("reps", [])) if prior else 0
     target_sets = len(sets_data)
+    dropped_volume = target_sets < historical_sets
 
     if deload:
         next_weight = math.floor((current_weight * 0.9) / step) * step
@@ -107,7 +125,7 @@ def evaluate_exercise(name, current_weight, sets_data, config, history):
             "next_weight": next_weight, 
             "target_sets": 1,
             "target_reps": f"{ceiling} (Submaximal, 3-4 RIR)", 
-            "rationale": "⚠️ Deload triggered (RIR ≥ 2 or mult-session regression). Load dropped 10%, volume slashed."
+            "rationale": "⚠️ Deload triggered (Fatigue or mult-session regression). Load dropped 10%, volume slashed."
         }
         regression_streak = 0
         
@@ -131,13 +149,18 @@ def evaluate_exercise(name, current_weight, sets_data, config, history):
             "rationale": "Ceiling not met across all sets. Hold load, add 1 rep."
         }
 
-    history[name] = {
+    if dropped_volume:
+        result["rationale"] += "\n   └ ⚠️ Volume dropped — fewer sets than planned."
+
+    new_record = {
+        "date": date_str,
         "weight": current_weight, 
         "reps": [s['reps'] for s in sets_data],
+        "rir": rirs,
         "regression_streak": regression_streak
     }
     
-    return result
+    return result, new_record
 
 def format_telegram_message(workout_name, workout_plan):
     """Formats the final blueprint text with an increase summary."""
@@ -240,45 +263,53 @@ def main():
     history = load_history()
     next_plan = []
     
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    
     for ex in exercises:
-        name = ex.get('title', ex.get('exercise', {}).get('title', 'Unknown Exercise')).strip()
+        raw_name = ex.get('title', ex.get('exercise', {}).get('title', 'Unknown Exercise')).strip()
+        name = match_exercise_config(raw_name)
         
-        if name not in EXERCISE_CONFIG:
+        if not name:
             continue
             
         sets_data = [s for s in ex.get('sets', []) if s.get('type', 'normal') == 'normal']
         if not sets_data:
             continue
             
-        current_weight = sets_data[0].get('weight_kg', 0)
+        current_weight = max((s.get('weight_kg', 0) for s in sets_data), default=0)
         
+        past_sessions = history.get(name, [])
+        if isinstance(past_sessions, dict):
+            past_sessions = []
+            
         # --- 1. THE MATH: Run your standard double-progression ---
-        math_plan = evaluate_exercise(name, current_weight, sets_data, EXERCISE_CONFIG[name], history)
+        math_plan, new_record = evaluate_exercise(name, current_weight, sets_data, EXERCISE_CONFIG[name], past_sessions, date_str)
+        
+        past_sessions.append(new_record)
+        history[name] = past_sessions[-8:]
         
         # --- 2. THE AI: Analyze JSON history for plateaus ---
-        past_sessions = history.get(name, [])
         ai_verdict = ""
         
         if is_intentional_deload:
             ai_verdict = "🟢 AI: Intentional deload recognized from notes."
-        elif len(past_sessions) >= 3:
-            # Compare the earliest stored session to the most recent stored session
-            # (Assuming your history saves a 'weight' and 'reps' or 'volume' key)
+        elif len(history[name]) >= 4:
             try:
-                vol_old = past_sessions[-3].get('weight', 0) * past_sessions[-3].get('reps', 0)
-                vol_recent = past_sessions[-1].get('weight', 0) * past_sessions[-1].get('reps', 0)
+                def calc_vol(sess):
+                    return sum(w * r for w, r in zip([sess.get('weight', 0)]*len(sess.get('reps', [])), sess.get('reps', [])))
                 
-                if vol_recent <= vol_old and vol_recent > 0:
+                recent_avg_vol = (calc_vol(history[name][-1]) + calc_vol(history[name][-2])) / 2
+                old_avg_vol = (calc_vol(history[name][-3]) + calc_vol(history[name][-4])) / 2
+                
+                if recent_avg_vol <= old_avg_vol and recent_avg_vol > 0:
                     ai_verdict = "🚨 AI: Plateau detected (Volume stagnation)."
                 else:
                     ai_verdict = "📈 AI: Upward momentum confirmed."
-            except:
-                ai_verdict = "🔍 AI: Tracking volume trends..."
+            except Exception as e:
+                ai_verdict = f"🔍 AI: Tracking volume trends... ({e})"
         else:
-            ai_verdict = "🔍 AI: Gathering baseline data (needs 3 sessions)."
+            ai_verdict = f"🔍 AI: Gathering baseline data (needs 4 sessions, has {len(history[name])})."
 
-        # --- 3. COMBINE: Staple the AI verdict under the Math targets ---
-        # --- 3. COMBINE: Staple the AI verdict under the Math targets ---
         math_plan['rationale'] += f"\n   └ {ai_verdict}"
         next_plan.append(math_plan)
 

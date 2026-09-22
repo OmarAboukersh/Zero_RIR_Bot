@@ -11,10 +11,17 @@ def normalize_name(name):
 
 def match_exercise_config(hevy_name):
     hevy_norm = normalize_name(hevy_name)
+    # 1. Exact match first (most reliable)
     for config_name in EXERCISE_CONFIG.keys():
-        if normalize_name(config_name) in hevy_norm or hevy_norm in normalize_name(config_name):
+        if normalize_name(config_name) == hevy_norm:
+            return config_name
+    # 2. Substring fallback (only if no exact match found)
+    for config_name in EXERCISE_CONFIG.keys():
+        config_norm = normalize_name(config_name)
+        if config_norm in hevy_norm or hevy_norm in config_norm:
             return config_name
     return None
+
 
 from dotenv import load_dotenv
 

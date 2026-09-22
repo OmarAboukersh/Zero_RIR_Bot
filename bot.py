@@ -43,7 +43,7 @@ EXERCISE_CONFIG = {
     # Isolations (10-15 Rep Range)
     "Lateral Raise (Cable)": {"ceiling": 15, "step": 2.5},
     "Lateral Raise (Dumbbell)": {"ceiling": 15, "step": 2.0},
-    "Triceps Pushdown": {"ceiling": 15, "step": 2.5},
+    "Triceps Pushdown": {"ceiling": 15, "step": 5.0},
     "Triceps Extension (Dumbbell)": {"ceiling": 15, "step": 2.0},
     "Crunch (Weighted)": {"ceiling": 15, "step": 2.5},
     "Single Leg Extensions": {"ceiling": 15, "step": 2.5},
@@ -231,7 +231,7 @@ def evaluate_exercise(name, current_weight, sets_data, config, prior_sessions, d
             "next_weight": next_weight, 
             "target_sets": 1,
             "target_reps": f"{ceiling} (Submaximal, 3-4 RIR)", 
-            "rationale": "⚠️ Deload triggered (Fatigue or mult-session regression). Load dropped 10%, volume slashed."
+            "rationale": "⚠️ Deload triggered. Load dropped 10%."
         }
         regression_streak = 0
         
@@ -242,7 +242,7 @@ def evaluate_exercise(name, current_weight, sets_data, config, prior_sessions, d
             "next_weight": current_weight + step,
             "target_sets": target_sets, 
             "target_reps": str(bottom_of_range),
-            "rationale": f"Ceiling ({ceiling}) cleared at 0 RIR. Load mathematically increased."
+            "rationale": "✅ Ceiling cleared. Load increased."
         }
         
     else:
@@ -252,11 +252,11 @@ def evaluate_exercise(name, current_weight, sets_data, config, prior_sessions, d
             "next_weight": current_weight, 
             "target_sets": target_sets,
             "target_reps": ", ".join(target_reps_list), 
-            "rationale": "Ceiling not met across all sets. Hold load, add 1 rep."
+            "rationale": "🔄 Ceiling not met. Add 1 rep."
         }
 
     if dropped_volume:
-        result["rationale"] += "\n   └ ⚠️ Volume dropped — fewer sets than planned."
+        result["rationale"] += " (⚠️ Volume dropped)"
 
     new_record = {
         "date": date_str,
@@ -270,7 +270,7 @@ def evaluate_exercise(name, current_weight, sets_data, config, prior_sessions, d
 
 def format_telegram_message(workout_name, workout_plan):
     """Formats the final blueprint text with an increase summary."""
-    increases = [item for item in workout_plan if "mathematically increased" in item['rationale']]
+    increases = [item for item in workout_plan if "Load increased" in item['rationale']]
     
     message = f"🚨 **Next '{workout_name}' Targets (0 RIR)** 🚨\n\n"
     
@@ -399,7 +399,7 @@ def main():
         ai_verdict = ""
         
         if is_intentional_deload:
-            ai_verdict = "🟢 AI: Intentional deload recognized from notes."
+            ai_verdict = "🟢 Intentional deload"
         elif len(history[name]) >= 4:
             try:
                 def calc_vol(sess):
@@ -409,23 +409,26 @@ def main():
                 old_avg_vol = (calc_vol(history[name][-3]) + calc_vol(history[name][-4])) / 2
                 
                 if recent_avg_vol <= old_avg_vol and recent_avg_vol > 0:
-                    ai_verdict = "🚨 AI: Plateau detected (Volume stagnation)."
+                    ai_verdict = "🚨 Plateau detected"
                 else:
-                    ai_verdict = "📈 AI: Upward momentum confirmed."
+                    ai_verdict = "📈 Upward momentum"
             except Exception as e:
-                ai_verdict = f"🔍 AI: Tracking volume trends... ({e})"
-        else:
-            ai_verdict = f"🔍 AI: Gathering baseline data (needs 4 sessions, has {len(history[name])})."
-
-        math_plan['rationale'] += f"\n   └ {ai_verdict}"
+                pass
         
         # --- 3. THE AI (ML): RandomForest forward-looking prediction ---
         avg_reps = sum(s['reps'] for s in sets_data) / len(sets_data)
         total_volume = current_weight * sum(s['reps'] for s in sets_data)
         ml_weight, ml_rmse = get_ml_prediction(name, avg_reps, current_weight, total_volume, len(sets_data))
+        
+        ml_str = ""
         if ml_weight is not None:
-            rmse_str = f" (±{ml_rmse}kg)" if ml_rmse else ""
-            math_plan['rationale'] += f"\n   └ 🤖 ML Forecast: Next session predicted at {ml_weight}kg{rmse_str}"
+            # Only show ML if it deviates from the math target by more than 10% or 5kg
+            dev = abs(ml_weight - math_plan['next_weight'])
+            if dev > (math_plan['next_weight'] * 0.1) or dev >= 5.0:
+                ml_str = f" | 🤖 ML Forecast: {ml_weight}kg"
+        
+        ai_str = f" | {ai_verdict}" if ai_verdict else ""
+        math_plan['rationale'] += f"{ai_str}{ml_str}"
         
         # Collect raw set data for CSV append
         raw_sets = ex.get('sets', [])

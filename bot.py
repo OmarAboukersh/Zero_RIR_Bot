@@ -2,7 +2,9 @@ import requests
 import json
 import os
 import math
+import re
 import datetime
+import joblib
 
 def normalize_name(name):
     return name.lower().strip()
@@ -89,6 +91,41 @@ def get_latest_workout():
             
     print(f"❌ Failed to pull from Hevy. Status Code: {response.status_code}")
     return None
+
+# --- ML PREDICTION LAYER ---
+MODELS_DIR = "models"
+MODEL_METADATA_FILE = os.path.join(MODELS_DIR, "model_metadata.json")
+
+def _safe_filename(name):
+    return re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') + ".pkl"
+
+def get_ml_prediction(exercise_name, reps, set_volume):
+    """Load a trained RandomForest model and predict target weight.
+    Returns (predicted_weight, rmse) or (None, None) if no model exists."""
+    model_path = os.path.join(MODELS_DIR, _safe_filename(exercise_name))
+    
+    if not os.path.exists(model_path):
+        return None, None
+    
+    try:
+        # Load metadata for RMSE
+        rmse = None
+        if os.path.exists(MODEL_METADATA_FILE):
+            with open(MODEL_METADATA_FILE, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            if exercise_name in meta:
+                rmse = meta[exercise_name].get("rmse_kg")
+        
+        model = joblib.load(model_path)
+        # Features must match training: [reps, set_volume, session_id]
+        # We use session_id=999 (high value) to represent "current / latest session"
+        import pandas as pd
+        X = pd.DataFrame([[reps, set_volume, 999]], columns=['reps', 'set_volume', 'session_id'])
+        prediction = model.predict(X)[0]
+        return round(prediction, 1), rmse
+    except Exception as e:
+        print(f"ML prediction error for {exercise_name}: {e}")
+        return None, None
 
 def evaluate_exercise(name, current_weight, sets_data, config, prior_sessions, date_str):
     ceiling = config["ceiling"]
@@ -311,6 +348,15 @@ def main():
             ai_verdict = f"🔍 AI: Gathering baseline data (needs 4 sessions, has {len(history[name])})."
 
         math_plan['rationale'] += f"\n   └ {ai_verdict}"
+        
+        # --- 3. THE AI (ML): RandomForest weight prediction from CSV history ---
+        avg_reps = sum(s['reps'] for s in sets_data) / len(sets_data)
+        avg_vol = current_weight * avg_reps
+        ml_weight, ml_rmse = get_ml_prediction(name, avg_reps, avg_vol)
+        if ml_weight is not None:
+            rmse_str = f" (±{ml_rmse}kg)" if ml_rmse else ""
+            math_plan['rationale'] += f"\n   └ 🤖 ML Model: Predicted target weight {ml_weight}kg{rmse_str}"
+        
         next_plan.append(math_plan)
 
     if next_plan:

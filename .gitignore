@@ -9,6 +9,9 @@ last_workout.txt
 error_log.txt
 morning_delivery_log.txt
 
+# Trained ML models (machine-specific)
+models/
+
 # Python cache
 __pycache__/
 *.py[cod]

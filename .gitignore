@@ -9,6 +9,7 @@ last_workout.txt
 error_log.txt
 morning_delivery_log.txt
 train_counter.txt
+workouts.csv
 
 # Trained ML models (machine-specific)
 models/

@@ -1,8 +1,19 @@
+"""
+Morning Delivery — Sends today's workout blueprint via Telegram.
+
+Generates targets LIVE from workouts.csv using the CSV trend engine.
+No dependency on upcoming_targets.json or stale cache files.
+"""
+
 import os
-import json
-import requests
+import sys
 import datetime
+import requests
 from dotenv import load_dotenv
+
+# Ensure UTF-8 output on Windows
+sys.stdout.reconfigure(encoding='utf-8')
+
 
 def send_telegram_message(message_text):
     """Sends the formatted text to Telegram using credentials from .env."""
@@ -22,6 +33,7 @@ def send_telegram_message(message_text):
     else:
         print(f"❌ Telegram Error: {response.text}")
 
+
 def main():
     # Load environment variables
     load_dotenv()
@@ -29,46 +41,38 @@ def main():
     # 0 = Monday, 1 = Tuesday, 2 = Wednesday, 3 = Thursday, 4 = Friday, 5 = Saturday, 6 = Sunday
     today_weekday = datetime.datetime.today().weekday()
     
-    # Map the current day to the requested workout keys
+    # Map the current day to the workout split AND its CSV title
     schedule_map = {
-        1: "Push",          # Tuesday
-        2: "Pull",          # Wednesday
-        5: "Push + Quads",  # Saturday
-        6: "Pull + Ham"     # Sunday
+        1: ("Push", "Push day"),        # Tuesday
+        2: ("Pull", "Pull day"),        # Wednesday
+        5: ("Push + Quads", "push + quad"),  # Saturday
+        6: ("Pull + Ham", "Pull + ham"),     # Sunday
     }
     
-    target_key = schedule_map.get(today_weekday)
+    entry = schedule_map.get(today_weekday)
     
-    if not target_key:
+    if not entry:
         print(f"No workout scheduled for today (Weekday {today_weekday}). Exiting.")
         return
-        
-    print(f"📅 Today is mapped to: {target_key}")
     
-    target_file = "upcoming_targets.json"
+    standard_key, csv_title = entry
+    print(f"📅 Today is mapped to: {standard_key} (CSV: '{csv_title}')")
     
-    if not os.path.exists(target_file):
-        print(f"❌ Target memory file '{target_file}' not found.")
-        return
-        
-    try:
-        with open(target_file, "r", encoding="utf-8") as f:
-            targets = json.load(f)
-    except Exception as e:
-        print(f"❌ Failed to parse {target_file}: {e}")
-        return
-        
-    message_text = targets.get(target_key)
+    # Import the trend engine and generate the blueprint LIVE from CSV
+    from csv_trend_engine import generate_full_blueprint
+    
+    message_text, targets = generate_full_blueprint(csv_title)
     
     if message_text:
-        print(f"📤 Found targets for {target_key}. Sending to Telegram...")
+        print(f"📤 Generated targets for {standard_key} from CSV trend engine. Sending to Telegram...")
         
-        # Add a small morning greeting header
-        final_message = f"🌅 **Morning Delivery** 🌅\nHere is your blueprint for today's session:\n\n{message_text}"
+        # Add a morning greeting header
+        final_message = f"🌅 *Morning Delivery* 🌅\nHere is your blueprint for today's session:\n\n{message_text}"
         
         send_telegram_message(final_message)
     else:
-        print(f"⚠️ No saved targets found for '{target_key}' in memory.")
+        print(f"⚠️ No CSV data found for '{csv_title}'. Cannot generate targets.")
+
 
 if __name__ == "__main__":
     main()

@@ -33,10 +33,12 @@ def safe_filename(name):
     return re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') + ".pkl"
 
 def load_and_clean_data(file_path):
-    """Load CSV and engineer base features."""
+    """Load CSV and engineer base features. Excludes deload sessions."""
     df = pd.read_csv(file_path)
     df = df.dropna(subset=['weight_kg', 'reps'])
     df = df[df['set_type'] == 'normal']
+    # Exclude deload sessions — intentionally lighter weights would distort the model
+    df = df[~df['description'].fillna('').str.lower().str.contains('deload')]
     df['set_volume'] = df['weight_kg'] * df['reps']
     df['start_time'] = pd.to_datetime(df['start_time'])
     df = df.sort_values('start_time')

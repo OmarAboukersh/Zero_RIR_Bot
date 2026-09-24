@@ -73,7 +73,15 @@ def load_csv(exclude_deloads=True):
     df = df.dropna(subset=['weight_kg', 'reps'])
     df = df[df['set_type'] == 'normal']
     df['start_time'] = pd.to_datetime(df['start_time'])
-    df = df.sort_values('start_time')
+    df['set_index'] = pd.to_numeric(df['set_index'], errors='coerce').fillna(0)
+    df = df.sort_values(['start_time', 'set_index'])
+    df['session_date'] = df['start_time'].dt.date
+    # Find the latest start_time for each exercise on a given day to avoid stitching sets from different syncs
+    idx = df.groupby(['session_date', 'title', 'exercise_title'])['start_time'].transform('max') == df['start_time']
+    df = df[idx]
+    # Keep the first occurrence of a set_index to prioritize main working sets over later burnout sets in the same workout
+    df = df.drop_duplicates(subset=['session_date', 'title', 'exercise_title', 'set_index'], keep='first')
+    
     df['set_volume'] = df['weight_kg'] * df['reps']
     
     # Filter out deload sessions so they don't corrupt progression data
@@ -367,10 +375,12 @@ def compute_next_target(exercise_name, sessions_df, config, trend_report, split_
     if split_last_session is not None:
         current_weight = split_last_session['max_weight']
         reps_list = split_last_session['reps_list']
+        weights_list = split_last_session['weights_list']
         num_sets = split_last_session['num_sets']
     else:
         current_weight = last['max_weight']
         reps_list = last['reps_list']
+        weights_list = last['weights_list']
         num_sets = last['num_sets']
     
     # Extract RPE and Notes
@@ -446,6 +456,29 @@ def compute_next_target(exercise_name, sessions_df, config, trend_report, split_
     # Use blended weight as the final target
     final_weight = blended
     
+    # --- Format Individual Sets ---
+    target_sets_data = []
+    weight_delta = final_weight - current_weight
+    
+    for i, w in enumerate(weights_list):
+        t_w = round(w + weight_delta, 1)
+        r = reps_list[i]
+        
+        if is_maxed:
+            if all_hit_ceiling:
+                t_r = r + 1
+            else:
+                t_r = r if max_rpe >= 9.5 else r + 1
+        else:
+            if all_hit_ceiling:
+                t_r = ceiling if max_rpe >= 9.5 else (5 if ceiling == 8 else 10)
+            else:
+                t_r = r if max_rpe >= 9.5 else min(r + 1, ceiling)
+                
+        target_sets_data.append(f"  Set {i+1}: {t_w}kg x {t_r}")
+        
+    formatted_targets = "\n".join(target_sets_data)
+    
     # --- Trend summary line ---
     n_sessions = trend_report['sessions_analyzed']
     weight_change = trend_report['weight_change_total']
@@ -460,6 +493,7 @@ def compute_next_target(exercise_name, sessions_df, config, trend_report, split_
         "ml_weight": ml_weight,
         "target_sets": int(num_sets),
         "target_reps": target_reps,
+        "formatted_targets": formatted_targets,
         "rationale": rationale,
         "trend_summary": trend_str,
         "ml_info": ml_str,
@@ -549,6 +583,7 @@ def generate_full_blueprint(split_name):
                 split_last = {
                     'max_weight': float(last_sets['weight_kg'].max()),
                     'reps_list': list(last_sets['reps'].dropna().astype(int)),
+                    'weights_list': list(last_sets['weight_kg'].dropna().astype(float)),
                     'num_sets': len(last_sets),
                 }
         
@@ -581,7 +616,7 @@ def generate_full_blueprint(split_name):
     
     for t in targets:
         msg += f"*{t['exercise']}*\n"
-        msg += f"🎯 Target: {t['next_weight']}kg for {t['target_sets']} sets ({t['target_reps']} reps)\n"
+        msg += f"🎯 Targets:\n{t['formatted_targets']}\n"
         msg += f"💡 {t['rationale']}\n"
         msg += f"{t['trend_summary']}"
         if t['ml_info']:
@@ -589,6 +624,34 @@ def generate_full_blueprint(split_name):
         msg += "\n\n"
     
     return msg, targets
+
+def get_exercise_targets(ex_name):
+    """Generates targets for a specific exercise independently (e.g. for /substitute)."""
+    from bot import EXERCISE_CONFIG
+    df = load_csv()
+    
+    config = EXERCISE_CONFIG.get(ex_name)
+    if not config:
+        return f"⚠️ '{ex_name}' is not in the active exercise pool."
+        
+    sessions = get_exercise_sessions(df, ex_name, max_sessions=100)
+    if sessions.empty:
+        return f"⚠️ No history found for '{ex_name}' in your CSV."
+        
+    trend = analyze_trend(sessions)
+    # Don't pass split_last, it will default to the absolute last session for this exercise
+    target = compute_next_target(ex_name, sessions, config, trend)
+    
+    if not target:
+        return f"⚠️ Could not compute targets for '{ex_name}'."
+        
+    msg = f"🎯 Targets:\n{target['formatted_targets']}\n"
+    msg += f"💡 {target['rationale']}\n"
+    msg += f"{target['trend_summary']}"
+    if target['ml_info']:
+        msg += f" | {target['ml_info']}"
+        
+    return msg
 
 
 def generate_all_blueprints():

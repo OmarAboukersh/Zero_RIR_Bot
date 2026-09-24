@@ -31,6 +31,13 @@ def match_exercise_config(hevy_name):
         config_norm = normalize_name(config_name)
         if config_norm in hevy_norm or hevy_norm in config_norm:
             return config_name
+    # 3. Fuzzy match (autocorrect spelling errors)
+    import difflib
+    all_normalized = {normalize_name(k): k for k in EXERCISE_CONFIG.keys()}
+    matches = difflib.get_close_matches(hevy_norm, all_normalized.keys(), n=1, cutoff=0.5)
+    if matches:
+        return all_normalized[matches[0]]
+        
     return None
 
 
@@ -59,22 +66,23 @@ EXERCISE_CONFIG = {
     # Isolations (10-15 Rep Range)
     "Lateral Raise (Cable)": {"ceiling": 15, "step": 2.5},
     "Lateral Raise (Dumbbell)": {"ceiling": 15, "step": 2.0},
-    "Triceps Pushdown": {"ceiling": 15, "step": 5.0},
+    "Triceps Pushdown": {"ceiling": 12, "step": 5.0},
     "Triceps Extension (Dumbbell)": {"ceiling": 15, "step": 2.0},
     "Crunch (Weighted)": {"ceiling": 15, "step": 2.5},
     "Single Leg Extensions": {"ceiling": 15, "step": 2.5},
     "Rear Delt Reverse Fly (Machine)": {"ceiling": 15, "step": 2.5},
-    "Back Extension (Weighted Hyperextension)": {"ceiling": 15, "step": 2.5},
+    "Back Extension (Weighted Hyperextension)": {"ceiling": 10, "step": 2.5},
     "Calf Press (Machine)": {"ceiling": 15, "step": 2.5},
-    "Reverse Curl (Cable)": {"ceiling": 15, "step": 2.5},
+    "Reverse Curl (Cable)": {"ceiling": 11, "step": 2.5},
     "Lying Leg Curl (Machine)": {"ceiling": 15, "step": 2.5},
     "Shrug (Cable)": {"ceiling": 15, "step": 2.5},
-    "Preacher curl single arm (machine)": {"ceiling": 15, "step": 2.5},
-    "Preacher Curl (Machine)": {"ceiling": 15, "step": 2.5}
+    "Preacher curl single arm (machine)": {"ceiling": 10, "step": 2.5},
+    "Preacher Curl (Machine)": {"ceiling": 10, "step": 2.5},
+    "Bicep Curl (Cable)": {"ceiling": 10, "step": 2.5}
 }
 
-def get_latest_workout():
-    """Fetches the most recently completed workout from Hevy."""
+def get_recent_workouts():
+    """Fetches the 10 most recently completed workouts from Hevy."""
     url = "https://api.hevyapp.com/v1/workouts"
     headers = {"api-key": HEVY_API_KEY, "Accept": "application/json"}
     
@@ -85,18 +93,17 @@ def get_latest_workout():
         
         if isinstance(data, dict):
             if "workouts" in data and len(data["workouts"]) > 0:
-                return data["workouts"][0]
+                return data["workouts"]
             elif "data" in data and len(data["data"]) > 0:
-                return data["data"][0]
+                return data["data"]
             else:
-                print(f"⚠️ Unexpected Hevy format: {data}")
-                return None
+                return []
                 
         elif isinstance(data, list) and len(data) > 0:
-            return data[0]
+            return data
             
     print(f"❌ Failed to pull from Hevy. Status Code: {response.status_code}")
-    return None
+    return []
 
 
 def send_telegram_message_text(message):
@@ -160,11 +167,14 @@ def save_last_processed_id(workout_id):
         f.write(workout_id)
 
 
-def append_workout_to_csv(workout_name, workout_description, exercises_data):
+def append_workout_to_csv(workout_name, workout_description, exercises_data, actual_time_str=None):
     """Append the current workout's set data to workouts.csv so the ML stays current."""
     csv_path = "workouts.csv"
     
-    now_str = datetime.datetime.now().strftime("%b %d, %Y, %I:%M %p")
+    if actual_time_str:
+        now_str = actual_time_str
+    else:
+        now_str = datetime.datetime.now().strftime("%b %d, %Y, %I:%M %p")
     rows = []
     
     for ex_name, sets_data, ex_notes in exercises_data:
@@ -229,41 +239,54 @@ def auto_retrain_if_needed():
 
 
 def main():
-    recent_workout = get_latest_workout()
-    if not recent_workout:
+    recent_workouts = get_recent_workouts()
+    if not recent_workouts:
         return
 
-    workout_id = str(recent_workout.get('id', ''))
     last_id = get_last_processed_id()
     
-    if workout_id == last_id and workout_id != '':
+    workouts_to_process = []
+    for w in recent_workouts:
+        if str(w.get('id', '')) == last_id:
+            break
+        workouts_to_process.append(w)
+        
+    if not workouts_to_process:
+        print("✅ No new workouts to process.")
         return
-
-    workout_name = recent_workout.get('name', recent_workout.get('title', 'Workout'))
-    workout_description = str(recent_workout.get('description', ''))
-    
-    # Detect intentional deload from workout notes/description or title
-    is_deload = 'deload' in workout_description.lower() or 'deload' in workout_name.lower()
-    
-    exercises = recent_workout.get('exercises', [])
-    exercises_for_csv = []
-    
-    for ex in exercises:
-        raw_name = ex.get('title', ex.get('exercise', {}).get('title', 'Unknown Exercise')).strip()
-        name = match_exercise_config(raw_name)
         
-        if not name:
-            continue
+    workouts_to_process.reverse()
+    
+    for recent_workout in workouts_to_process:
+        workout_name = recent_workout.get('name', recent_workout.get('title', 'Workout'))
+        workout_description = str(recent_workout.get('description', ''))
+        workout_id = str(recent_workout.get('id', ''))
+        
+        # Detect intentional deload from workout notes/description or title
+        is_deload = 'deload' in workout_description.lower() or 'deload' in workout_name.lower()
+        
+        exercises = recent_workout.get('exercises', [])
+        exercises_for_csv = []
+        
+        for ex in exercises:
+            raw_name = ex.get('title', ex.get('exercise', {}).get('title', 'Unknown Exercise')).strip()
+            name = match_exercise_config(raw_name)
             
-        ex_notes = str(ex.get('notes', '')).replace('\n', ' ')
-        
-        # Collect raw set data for CSV append
-        raw_sets = ex.get('sets', [])
-        exercises_for_csv.append((name, raw_sets, ex_notes))
-
-    if exercises_for_csv:
-        # 1. ALWAYS append workout data to CSV (even deloads, for complete history)
-        append_workout_to_csv(workout_name, workout_description, exercises_for_csv)
+            if not name:
+                continue
+                
+            ex_notes = str(ex.get('notes', '')).replace('\n', ' ')
+            
+            # Collect raw set data for CSV append
+            raw_sets = ex.get('sets', [])
+            exercises_for_csv.append((name, raw_sets, ex_notes))
+    
+        if exercises_for_csv:
+            # 1. ALWAYS append workout data to CSV (even deloads, for complete history)
+            w_time = pd.to_datetime(recent_workout.get('start_time'))
+            actual_time_str = w_time.strftime("%b %d, %Y, %I:%M %p")
+            
+            append_workout_to_csv(workout_name, workout_description, exercises_for_csv, actual_time_str)
         
         if is_deload:
             # Deload detected — acknowledge it but DON'T generate targets from it

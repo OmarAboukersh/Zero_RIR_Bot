@@ -16,6 +16,7 @@ import math
 import re
 import datetime
 import joblib
+import pandas as pd
 
 def normalize_name(name):
     return name.lower().strip()
@@ -58,9 +59,9 @@ EXERCISE_CONFIG = {
     "Incline Bench Press (Smith Machine)": {"ceiling": 8, "step": 2.5},
     "Squat (Smith Machine)": {"ceiling": 8, "step": 2.5},
     "T Bar Row": {"ceiling": 8, "step": 2.5},
-    "Reverse Grip Lat Pulldown (Cable)": {"ceiling": 8, "step": 2.5},
-    "Lat Pulldown (Cable)": {"ceiling": 8, "step": 2.5},
-    "Seated Cable Row - V Grip (Cable)": {"ceiling": 8, "step": 2.5},
+    "Reverse Grip Lat Pulldown (Cable)": {"ceiling": 8, "step": 3.5},  # cable stack moves in 3.5kg plates
+    "Lat Pulldown (Cable)": {"ceiling": 8, "step": 3.5},  # cable stack moves in 3.5kg plates
+    "Seated Cable Row - V Grip (Cable)": {"ceiling": 8, "step": 3.5},  # cable stack moves in 3.5kg plates
     "Seated Shoulder Press (Machine)": {"ceiling": 8, "step": 2.5},
     
     # Isolations (10-15 Rep Range)
@@ -199,7 +200,6 @@ def append_workout_to_csv(workout_name, workout_description, exercises_data, act
     if not rows:
         return
     
-    import pandas as pd
     new_df = pd.DataFrame(rows)
     
     # Append (write header only if file doesn't exist)

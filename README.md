@@ -9,7 +9,8 @@ Zero_RIR_Bot is a Python-based hypertrophy and strength programming engine desig
 - **Interactive Telegram Assistant:** A constantly running Telegram listener (`telegram_listener.py`) provides real-time access to your data.
 - **Smart Autocorrect:** Don't worry about spelling. The bot uses a fuzzy matching engine (`difflib`) to instantly autocorrect typos in your commands (e.g. "dumbells" auto-corrects to "Dumbbell").
 - **Burnout Set Protection:** If you do an exercise twice in the same workout (e.g. main heavy sets followed by later burnout sets), the engine strictly prioritizes your main working sets and ignores the light burnout sets for progression tracking.
-- **Deload Detection:** Tag a workout with "deload" in the title or notes, and the bot will cleanly ignore the workout for progression tracking to prevent polluting the ML dataset.
+- **Deload Detection:** Tag a workout with "deload" in the title or notes, and the bot will cleanly ignore the workout for progression tracking to prevent polluting the ML dataset. Untagged deloads are caught automatically: any lift that drops below 80% of its last working weight and then recovers the next session is excluded (a whole workout is excluded when most of its lifts do this).
+- **Honest ML Hints:** Target weights come from double progression only. The ML forecast is shown as a hint only for exercises where it has been proven (walk-forward validation) to beat simply repeating last session's weight.
 
 ## Commands
 - `/next`: Predicts your next scheduled workout (based on your rolling split) and instantly outputs the generated blueprint and targets.

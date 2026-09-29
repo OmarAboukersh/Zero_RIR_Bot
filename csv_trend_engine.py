@@ -3,7 +3,8 @@ CSV Trend Engine — The brain of Zero RIR Bot.
 
 Reads ALL workout history from workouts.csv and computes intelligent targets
 based on long-term trends (50-100 sessions), recent momentum (10-20 sessions),
-and ML predictions (blended with math-based double progression).
+and math-based double progression. ML predictions are shown as a hint only,
+and only for exercises where the model beats a "no change" baseline.
 
 This module replaces the old exercise_history.json approach.
 The CSV is the single source of truth.
@@ -28,6 +29,10 @@ MODEL_METADATA_FILE = os.path.join(MODELS_DIR, "model_metadata.json")
 TREND_WINDOW = 60       # Sessions for linear regression trend analysis
 MOMENTUM_WINDOW = 15    # Sessions for recent momentum scoring
 PLATEAU_MIN_SESSIONS = 8  # Minimum flat sessions to declare a plateau
+
+MAX_VALID_REPS = 50        # Anything above this is a logging typo (e.g. 1976 reps)
+DELOAD_DROP_RATIO = 0.8    # Weight below 80% of the last working weight = deload candidate
+DELOAD_RECOVER_RATIO = 0.9 # ...confirmed if the next session is back to 90%+ of it
 
 # Import exercise config from bot.py
 import sys
@@ -72,6 +77,8 @@ def load_csv(exclude_deloads=True):
         
     df = df.dropna(subset=['weight_kg', 'reps'])
     df = df[df['set_type'] == 'normal']
+    # Drop impossible values from logging typos
+    df = df[(df['reps'] > 0) & (df['reps'] <= MAX_VALID_REPS) & (df['weight_kg'] >= 0)]
     df['start_time'] = pd.to_datetime(df['start_time'])
     df['set_index'] = pd.to_numeric(df['set_index'], errors='coerce').fillna(0)
     df = df.sort_values(['start_time', 'set_index'])
@@ -87,12 +94,81 @@ def load_csv(exclude_deloads=True):
     # Filter out deload sessions so they don't corrupt progression data
     if exclude_deloads:
         deload_mask = df['description'].fillna('').str.lower().str.contains('deload') | df['title'].fillna('').str.lower().str.contains('deload')
+        # Also catch deloads that were never tagged in Hevy
+        auto_deloads, deload_exercises = _detect_untagged_deloads(df[~deload_mask])
+        if auto_deloads:
+            workout_keys = pd.Series(list(zip(df['session_date'], df['title'])), index=df.index)
+            deload_mask |= workout_keys.isin(auto_deloads)
+            print(f"🔇 Auto-detected {len(auto_deloads)} untagged deload workout(s): "
+                  f"{', '.join(f'{d} {t}' for d, t in sorted(auto_deloads))}")
+        if deload_exercises:
+            exercise_keys = pd.Series(list(zip(df['session_date'], df['title'], df['exercise_title'])), index=df.index)
+            deload_mask |= exercise_keys.isin(deload_exercises)
+            print(f"🔇 Auto-detected {len(deload_exercises)} single-exercise deload session(s)")
         n_deload = deload_mask.sum()
         if n_deload > 0:
             print(f"🔇 Excluded {n_deload} deload rows from analysis")
         df = df[~deload_mask]
-    
+
     return df
+
+
+def _detect_untagged_deloads(df):
+    """
+    Find workouts that look like deloads even though they weren't tagged.
+
+    An exercise "votes deload" when its weight drops below DELOAD_DROP_RATIO of
+    the last working weight AND the next session goes back up to at least
+    DELOAD_RECOVER_RATIO of it (or there is no next session yet). The recovery
+    check stops a gym switch or a genuine reset from being mistaken for a deload.
+
+    A workout is a deload when at least 2 exercises, and at least half of the
+    exercises that have a previous session, vote deload. Outside such workouts,
+    a single exercise is still dropped when its dip is confirmed by a recovery
+    in the following session (e.g. benching 50kg for one day between 90kg days).
+
+    Returns (set of (session_date, title) workout keys,
+             set of (session_date, title, exercise_title) exercise keys).
+    """
+    per_ex = (df.groupby(['session_date', 'title', 'exercise_title'])['weight_kg']
+                .max().reset_index().sort_values('session_date'))
+
+    # Every session's weight for each exercise, in order (for the recovery check)
+    history = {ex: list(zip(g['session_date'], g['title'], g['weight_kg']))
+               for ex, g in per_ex.groupby('exercise_title')}
+
+    last_working = {}  # exercise -> last non-deload weight
+    deloads = set()
+    deload_exercises = set()
+
+    for (date, title), workout in per_ex.groupby(['session_date', 'title'], sort=False):
+        compared = votes = 0
+        confirmed = set()  # exercises whose dip was followed by a recovery
+        for ex, weight in zip(workout['exercise_title'], workout['weight_kg']):
+            ref = last_working.get(ex)
+            if not ref or ref <= 0:
+                continue
+            compared += 1
+            if weight >= DELOAD_DROP_RATIO * ref:
+                continue
+            ex_hist = history[ex]
+            pos = next(i for i, (d, t, _) in enumerate(ex_hist) if d == date and t == title)
+            next_weight = ex_hist[pos + 1][2] if pos + 1 < len(ex_hist) else None
+            if next_weight is None or next_weight >= DELOAD_RECOVER_RATIO * ref:
+                votes += 1
+                if next_weight is not None:
+                    confirmed.add(ex)
+
+        if votes >= 2 and votes >= compared / 2:
+            deloads.add((date, title))
+        else:
+            for ex, weight in zip(workout['exercise_title'], workout['weight_kg']):
+                if ex in confirmed:
+                    deload_exercises.add((date, title, ex))
+                else:
+                    last_working[ex] = weight
+
+    return deloads, deload_exercises
 
 
 def _find_csv_name(exercise_name, csv_exercises):
@@ -107,7 +183,7 @@ def _find_csv_name(exercise_name, csv_exercises):
     return None
 
 
-def get_exercise_sessions(df, exercise_name, max_sessions=100):
+def get_exercise_sessions(df, exercise_name, max_sessions=30):
     """
     Aggregate set-level rows into session-level features for one exercise.
     
@@ -286,63 +362,39 @@ def _safe_filename(name):
     return re.sub(r'[^a-z0-9]+', '_', name.lower()).strip('_') + ".pkl"
 
 
-def get_ml_prediction(exercise_name, avg_reps, max_weight, total_volume, num_sets, session_number):
+ML_FEATURE_COLS = ['avg_reps', 'max_weight', 'total_volume', 'num_sets']
+
+
+def get_ml_prediction(exercise_name, session_row):
     """
     Load a trained RandomForest model and predict NEXT session weight.
-    Returns (predicted_weight, rmse) or (None, None).
+
+    Only returns a prediction when training showed the model beats the
+    "same weight as last time" baseline for this exercise — otherwise the
+    number is noise and is hidden.
+
+    Returns (predicted_weight, mae_kg) or (None, None).
     """
     model_path = os.path.join(MODELS_DIR, _safe_filename(exercise_name))
-    
-    if not os.path.exists(model_path):
+
+    if not os.path.exists(model_path) or not os.path.exists(MODEL_METADATA_FILE):
         return None, None
-    
+
     try:
-        rmse = None
-        if os.path.exists(MODEL_METADATA_FILE):
-            with open(MODEL_METADATA_FILE, "r", encoding="utf-8") as f:
-                meta = json.load(f)
-            if exercise_name in meta:
-                rmse = meta[exercise_name].get("rmse_kg")
-        
+        with open(MODEL_METADATA_FILE, "r", encoding="utf-8") as f:
+            meta = json.load(f).get(exercise_name)
+        if not meta or not meta.get("beats_baseline"):
+            return None, None
+
         model = joblib.load(model_path)
-        X = pd.DataFrame(
-            [[avg_reps, max_weight, total_volume, num_sets, session_number]],
-            columns=['avg_reps', 'max_weight', 'total_volume', 'num_sets', 'session_number']
-        )
-        prediction = model.predict(X)[0]
-        return round(prediction, 1), rmse
+        feature_cols = meta.get("feature_cols", ML_FEATURE_COLS)
+        X = pd.DataFrame([[session_row[c] for c in feature_cols]], columns=feature_cols)
+        # The model predicts 'weight_change' (a delta)
+        predicted_weight = session_row['max_weight'] + model.predict(X)[0]
+        return round(predicted_weight, 1), meta.get("mae_kg")
     except Exception as e:
         print(f"ML prediction error for {exercise_name}: {e}")
         return None, None
-
-
-def blend_targets(math_weight, ml_weight, ml_rmse, step):
-    """
-    Blend the math-based target weight with the ML prediction.
-    
-    Strategy:
-      - If ML RMSE is low (< 3kg), trust ML more (60% ML, 40% math)
-      - If ML RMSE is moderate (3-10kg), balanced (40% ML, 60% math)
-      - If ML RMSE is high (>10kg), trust math more (20% ML, 80% math)
-      - Round to nearest step increment
-    """
-    if ml_weight is None:
-        return math_weight
-    
-    if ml_rmse is not None and ml_rmse < 3.0:
-        ml_w = 0.6
-    elif ml_rmse is not None and ml_rmse < 10.0:
-        ml_w = 0.4
-    else:
-        ml_w = 0.2
-    
-    math_w = 1.0 - ml_w
-    blended = (math_weight * math_w) + (ml_weight * ml_w)
-    
-    # Round to nearest step
-    blended = round(blended / step) * step
-    
-    return round(blended, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +405,8 @@ def compute_next_target(exercise_name, sessions_df, config, trend_report, split_
     """
     Compute the next session's target for one exercise.
     
-    Uses double-progression logic informed by trend data and blended with ML.
+    Uses double-progression logic informed by trend data. ML is attached as an
+    optional hint and never changes the target weight.
     
     Args:
         split_last_session: Optional dict with 'reps_list', 'max_weight', 'num_sets'
@@ -436,32 +489,23 @@ def compute_next_target(exercise_name, sessions_df, config, trend_report, split_
     elif trend_report["momentum_label"] == "Strong":
         rationale += " | 📈 Upward momentum"
     
-    # --- ML blending ---
-    avg_reps = last['avg_reps']
-    total_volume = last['total_volume']
-    session_number = last['session_number']
-    
-    ml_weight, ml_rmse = get_ml_prediction(
-        exercise_name, avg_reps, current_weight, total_volume, int(num_sets), session_number
-    )
-    
-    blended = blend_targets(math_weight, ml_weight, ml_rmse, step)
-    
-    # Build ML info string
+    # --- ML hint (informational only, never changes the target) ---
+    ml_weight, ml_mae = get_ml_prediction(exercise_name, last)
+
     ml_str = ""
     if ml_weight is not None:
-        confidence = "high" if (ml_rmse and ml_rmse < 3) else "med" if (ml_rmse and ml_rmse < 10) else "low"
-        ml_str = f"🤖 ML: {ml_weight}kg ({confidence} conf)"
-    
-    # Use blended weight as the final target
-    final_weight = blended
-    
+        ml_str = f"🤖 ML hint: {ml_weight:g}kg (±{ml_mae:g}kg)"
+
+    # The target weight comes purely from double progression, stepping up from
+    # the weight actually used so it lands on a real plate/stack increment
+    final_weight = round(math_weight, 2)
+
     # --- Format Individual Sets ---
     target_sets_data = []
     weight_delta = final_weight - current_weight
-    
+
     for i, w in enumerate(weights_list):
-        t_w = round(w + weight_delta, 1)
+        t_w = round(w + weight_delta, 2)
         r = reps_list[i]
         
         if is_maxed:
@@ -475,7 +519,7 @@ def compute_next_target(exercise_name, sessions_df, config, trend_report, split_
             else:
                 t_r = r if max_rpe >= 9.5 else min(r + 1, ceiling)
                 
-        target_sets_data.append(f"  Set {i+1}: {t_w}kg x {t_r}")
+        target_sets_data.append(f"  Set {i+1}: {t_w:g}kg x {t_r}")
         
     formatted_targets = "\n".join(target_sets_data)
     
@@ -565,8 +609,8 @@ def generate_full_blueprint(split_name):
         if not config:
             continue
         
-        # Get session history (up to 100 sessions for this exercise across ALL splits)
-        sessions = get_exercise_sessions(df, ex_name, max_sessions=100)
+        # Get session history (up to 30 sessions for this exercise across ALL splits)
+        sessions = get_exercise_sessions(df, ex_name, max_sessions=30)
         
         if sessions.empty:
             continue
@@ -609,7 +653,7 @@ def generate_full_blueprint(split_name):
     if increases:
         msg += "📈 *WEIGHT INCREASES:*\n"
         for inc in increases:
-            msg += f"• {inc['exercise']} ➡️ *{inc['next_weight']}kg*\n"
+            msg += f"• {inc['exercise']} ➡️ *{inc['next_weight']:g}kg*\n"
         msg += "\n━━━━━━━━━━━━━━━━━━\n\n"
     
     msg += "📋 *DETAILED TARGETS:*\n\n"
@@ -634,7 +678,7 @@ def get_exercise_targets(ex_name):
     if not config:
         return f"⚠️ '{ex_name}' is not in the active exercise pool."
         
-    sessions = get_exercise_sessions(df, ex_name, max_sessions=100)
+    sessions = get_exercise_sessions(df, ex_name, max_sessions=30)
     if sessions.empty:
         return f"⚠️ No history found for '{ex_name}' in your CSV."
         

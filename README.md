@@ -27,6 +27,8 @@ Your own website for the bot: today's targets, all 4 days, stats charts, the wee
 
 **Gym mode:** tap **Start workout** on the Today or All days tab. One exercise at a time with a big target, last session's sets, a button per set to tick it off, a rest timer that starts by itself when you tick a set (3 min; +15/−15 is remembered per exercise), a beep and vibration when rest is over, and a plate calculator for plate-loaded exercises using the gym's plates (20, 15, 10, 5, 2.5, 1.25 kg; Smith machine bar counted as 0, barbell as 20, both editable per exercise). The screen stays on, and progress survives the phone locking or the page reloading. **End** (tap twice) stops a workout you started by accident.
 
+**AI coach (Coach tab):** chat with a coach that sees your current targets for all 4 days, your last 4 sessions of every exercise (sets, RPE, notes), your settings and the weekly summary, plus the progression rules. Ask about injuries, breaks, stalled lifts or RPE. Uses Google's Gemini API free tier: put `GEMINI_API_KEY` in `.env` (free key from aistudio.google.com/apikey) and restart. The provider lives in one function in `coach.py`, so it can be swapped. Your training data is sent to Gemini with each question.
+
 **Auto-sync:** every time the app opens (or you come back to it), it pulls new workouts from Hevy in the background, at most once every 5 minutes (`AUTOSYNC_MINUTES`). If a new workout came in, the page refreshes itself. A lock file (`sync.lock`) makes sure the app and the scheduled `run_bot.bat` never sync at the same time.
 
 **Optional PIN:** add `APP_PIN="1234"` to `.env`. Turn this on if you ever run it on a shared Wi-Fi.
@@ -75,6 +77,7 @@ Changes are saved in `exercise_settings.json` and take effect immediately; the d
 - Python 3
 - pandas, scikit-learn (Data & Trend Engine)
 - Flask (web app), vanilla JavaScript front end (no build step)
+- Google Gemini API (AI coach)
 - pytest + GitHub Actions, Docker
 - Cloudflare Tunnel + Access
 - ntfy (optional phone notifications)

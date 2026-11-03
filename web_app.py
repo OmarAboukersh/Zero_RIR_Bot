@@ -364,6 +364,53 @@ def api_sync():
     return jsonify(ok=True, log=log or "Done.")
 
 
+def coach_context():
+    """Everything the AI coach should know, as one text block."""
+    import coach
+    split, day = next_workout()
+    next_split = None
+    if split:
+        next_split = dict(build_split(split), date_label=day.strftime("%A, %b %d"))
+    splits = [build_split(s) for s in SPLITS]
+
+    df = cached_load_csv()
+    history = {}
+    for s in splits:
+        for e in s["exercises"]:
+            name = e["exercise"]
+            if name in history:
+                continue
+            sessions = engine.get_exercise_sessions(df, name, max_sessions=4)
+            history[name] = [{
+                "date": row["session_date"].isoformat(),
+                "workout": str(row["title"]).strip(),
+                "sets": [[float(w), int(r)] for w, r in zip(row["weights_list"], row["reps_list"])],
+                "rpe": None if row["max_rpe"] != row["max_rpe"] else float(row["max_rpe"]),  # NaN check
+                "notes": str(row["exercise_notes"]) if isinstance(row["exercise_notes"], str) else "",
+            } for _, row in sessions.iterrows()]
+
+    settings = [_settings_row(n) for n in core.EXERCISE_CONFIG]
+    return coach.build_context(next_split, splits, settings, weekly_summary.build_weekly_summary(), history)
+
+
+@app.route("/api/coach/status")
+def api_coach_status():
+    return jsonify(enabled=bool(os.getenv("GEMINI_API_KEY", "").strip()))
+
+
+@app.route("/api/coach", methods=["POST"])
+def api_coach():
+    import coach
+    body = request.get_json(silent=True) or {}
+    try:
+        reply = coach.ask_coach(body.get("messages"), coach_context())
+    except coach.CoachError as e:
+        if str(e) == "NO_KEY":
+            return jsonify(error="The coach needs a Gemini API key. See the setup steps on the Coach tab.", no_key=True), 400
+        return jsonify(error=str(e)), 400
+    return jsonify(reply=reply)
+
+
 AUTOSYNC_MINUTES = float(os.getenv("AUTOSYNC_MINUTES", "5"))
 _last_autosync = 0.0
 

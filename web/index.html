@@ -52,7 +52,7 @@ header h1 { font-size: 18px; margin: 0; flex: 1; font-weight: 650; }
 
 nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--card);
   border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
-nav .wrap { display: grid; grid-template-columns: repeat(5, 1fr); padding: 0 4px; }
+nav .wrap { display: grid; grid-template-columns: repeat(6, 1fr); padding: 0 2px; }
 nav button { background: none; border: 0; padding: 9px 0 8px; display: flex; flex-direction: column;
   align-items: center; gap: 3px; font-size: 11px; color: var(--faint); cursor: pointer; }
 nav button svg { width: 22px; height: 22px; }
@@ -201,6 +201,26 @@ pre.joblog { background: var(--card2); border-radius: 10px; padding: 10px; font-
 .g-done { text-align: center; padding: 40px 0; }
 .g-done h2 { font-size: 30px; margin: 10px 0; }
 
+/* ---------- Coach ---------- */
+.chat { display: flex; flex-direction: column; gap: 10px; padding-bottom: 8px; }
+.msg { max-width: 88%; padding: 10px 13px; border-radius: 16px; font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; }
+.msg.user { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 5px; }
+.msg.model { align-self: flex-start; background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+.msg.model p { margin: 0 0 6px; } .msg.model p:last-child { margin: 0; }
+.msg.model ul { margin: 4px 0 6px; padding-left: 18px; } .msg.model li { margin: 2px 0; }
+.msg.err { align-self: flex-start; background: var(--bad-bg); color: var(--bad); }
+.typing { align-self: flex-start; color: var(--muted); font-size: 14px; padding: 4px 6px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; }
+.chip { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px; font-size: 13.5px; cursor: pointer; text-align: left; }
+.composer { position: sticky; bottom: calc(66px + env(safe-area-inset-bottom)); background: var(--bg); padding: 10px 0 8px; display: flex; gap: 8px; align-items: flex-end; }
+.composer textarea { flex: 1; min-width: 0; resize: none; background: var(--card2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 12px; max-height: 140px; min-height: 44px; line-height: 1.4; font: inherit; color: inherit; }
+.composer textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.composer .btn { height: 44px; }
+.coach-intro { color: var(--muted); font-size: 14px; margin: 0 0 10px; }
+.setup ol { padding-left: 20px; margin: 8px 0; } .setup li { margin: 6px 0; }
+.setup code { background: var(--card2); padding: 2px 6px; border-radius: 6px; font-family: var(--mono); font-size: 13px; }
+
 #pin { position: fixed; inset: 0; background: var(--bg); z-index: 40; display: none; place-items: center; padding: 16px; }
 #pin.on { display: grid; }
 #pin form { width: 100%; max-width: 320px; text-align: center; }
@@ -231,6 +251,7 @@ pre.joblog { background: var(--card2); border-radius: 10px; padding: 10px; font-
     <div id="statsBody"></div>
   </section>
   <section class="view" id="v-week"></section>
+  <section class="view" id="v-coach"></section>
   <section class="view" id="v-settings">
     <input type="text" class="search" id="setSearch" placeholder="Filter exercises" aria-label="Filter exercises">
     <div id="setBody"></div>
@@ -243,6 +264,7 @@ pre.joblog { background: var(--card2); border-radius: 10px; padding: 10px; font-
     <button data-v="plan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="5" width="16" height="16" rx="2"/><path d="M16 3v4M8 3v4M4 11h16"/></svg>All days</button>
     <button data-v="stats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19h16M7 15l4-5 3 3 5-7"/></svg>Stats</button>
     <button data-v="week"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/></svg>Week</button>
+    <button data-v="coach"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/></svg>Coach</button>
     <button data-v="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Settings</button>
   </div>
 </nav>
@@ -286,6 +308,8 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch {} },
 };
 
+const loadJSON = (k, d) => { try { return JSON.parse(store.get(k)) ?? d; } catch { return d; } };
+const saveJSON = (k, v) => store.set(k, JSON.stringify(v));
 let pin = store.get("zr_pin") || "";
 let exercises = [];
 const cache = {};
@@ -318,7 +342,7 @@ $("#pinForm").addEventListener("submit", async e => {
 $("#pinInput").addEventListener("input", () => $("#pinErr").textContent = "");
 
 /* ---------- Navigation ---------- */
-const TITLES = { today: "Today", plan: "All days", stats: "Stats", week: "This week", settings: "Settings" };
+const TITLES = { today: "Today", plan: "All days", stats: "Stats", week: "This week", coach: "Coach", settings: "Settings" };
 let current = "today";
 function go(v) {
   current = v;
@@ -341,6 +365,7 @@ function load(v, force) {
   if (v === "stats") loadStats();
   if (v === "week") loadWeek(force);
   if (v === "settings") loadSettings(force);
+  if (v === "coach") loadCoach();
 }
 
 /* ---------- Exercise card ---------- */
@@ -619,11 +644,101 @@ async function runJob(path, btn, label) {
 $("#doSync").addEventListener("click", e => runJob("sync", e.target, "Syncing"));
 $("#doTrain").addEventListener("click", e => runJob("train", e.target, "Training"));
 
+/* ---------- Coach ---------- */
+const COACH_KEY = "zr_coach";
+let chat = loadJSON(COACH_KEY, []);
+let coachEnabled = null, coachBusy = false;
+const QUICK = [
+  "How did my last workout go?",
+  "I'm injured / sore. What should I change?",
+  "I need to take a break this week",
+  "Why is my shoulder press stuck?",
+  "Am I rating my RPE right?",
+];
+
+function coachMd(text) {
+  // Small, safe markdown: **bold**, *bold*, "- " lists, paragraphs
+  const lines = esc(text).split("\n");
+  let html = "", inList = false;
+  for (const raw of lines) {
+    const line = raw.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<b>$2</b>");
+    const li = line.match(/^\s*(?:[-•*]|\d+[.)])\s+(.*)/);
+    if (li) { if (!inList) { html += "<ul>"; inList = true; } html += `<li>${li[1]}</li>`; continue; }
+    if (inList) { html += "</ul>"; inList = false; }
+    if (line.trim()) html += `<p>${line}</p>`;
+  }
+  return html + (inList ? "</ul>" : "");
+}
+
+async function loadCoach() {
+  const el = $("#v-coach");
+  if (coachEnabled === null) {
+    try { coachEnabled = (await api("coach/status")).enabled; } catch (e) { fail(el, e); return; }
+  }
+  if (!coachEnabled) {
+    el.innerHTML = `<div class="g-card setup"><h4>Set up your coach</h4>
+      <p class="reason" style="margin:0">The coach uses Google's Gemini (free tier). One-time setup on the laptop:</p>
+      <ol>
+        <li>Go to <b>aistudio.google.com/apikey</b>, sign in with Google and click <b>Create API key</b>.</li>
+        <li>Open the <code>.env</code> file in the Zero_RIR_Bot folder and add a line:<br><code>GEMINI_API_KEY="paste-your-key"</code></li>
+        <li>Close the web app window and run <code>run_web_app.bat</code> again, then come back here.</li>
+      </ol>
+      <p class="reason" style="margin:0">Your targets, recent sets and settings are sent to Gemini with each question so it can answer about your training.</p></div>`;
+    return;
+  }
+  renderChat();
+}
+
+function renderChat() {
+  const el = $("#v-coach");
+  const msgs = chat.map(m => m.role === "user"
+    ? `<div class="msg user">${esc(m.text).replace(/\n/g, "<br>")}</div>`
+    : m.role === "err" ? `<div class="msg err">${esc(m.text)}</div>`
+    : `<div class="msg model">${coachMd(m.text)}</div>`).join("");
+  el.innerHTML = `
+    ${chat.length ? "" : `<p class="coach-intro">Ask anything about your training. I can see your targets, your last few sessions of every exercise, your settings and this week's summary.</p>`}
+    <div class="chat" id="chatList">${msgs}${coachBusy ? '<div class="typing">Coach is typing…</div>' : ""}</div>
+    ${chat.length ? "" : `<div class="chips">${QUICK.map(q => `<button class="chip" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>`}
+    <form class="composer" id="composer">
+      <textarea id="coachInput" rows="1" placeholder="Message your coach" aria-label="Message your coach"></textarea>
+      <button class="btn" ${coachBusy ? "disabled" : ""}>Send</button>
+    </form>
+    ${chat.length ? `<div style="text-align:center"><button class="link" id="clearChat">Clear chat</button></div>` : ""}`;
+  const input = $("#coachInput");
+  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 140) + "px"; });
+  input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer: coarse)").matches) { e.preventDefault(); sendCoach(input.value); } });
+  $("#composer").addEventListener("submit", e => { e.preventDefault(); sendCoach(input.value); });
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+async function sendCoach(text) {
+  text = (text || "").trim();
+  if (!text) { toast("Type a message first"); return; }
+  if (coachBusy) return;
+  chat = chat.filter(m => m.role !== "err");
+  chat.push({ role: "user", text });
+  coachBusy = true; renderChat();
+  try {
+    const r = await api("coach", { messages: chat.filter(m => m.role !== "err").slice(-20) });
+    chat.push({ role: "model", text: r.reply });
+  } catch (e) {
+    if (/Gemini API key/.test(e.message)) coachEnabled = false;
+    chat.push({ role: "err", text: e.message });
+  }
+  coachBusy = false;
+  saveJSON(COACH_KEY, chat.filter(m => m.role !== "err").slice(-40));
+  if (current === "coach") { if (coachEnabled) renderChat(); else loadCoach(); }
+}
+
+$("#v-coach").addEventListener("click", e => {
+  const chip = e.target.closest("[data-q]");
+  if (chip) { sendCoach(chip.dataset.q); return; }
+  if (e.target.closest("#clearChat")) { chat = []; saveJSON(COACH_KEY, chat); renderChat(); }
+});
+
 /* ---------- Gym mode ---------- */
 const GYM_KEY = "zr_gym";
 const todayStr = () => new Date().toLocaleDateString("en-CA");
-const loadJSON = (k, d) => { try { return JSON.parse(store.get(k)) ?? d; } catch { return d; } };
-const saveJSON = (k, v) => store.set(k, JSON.stringify(v));
 let gym = loadJSON(GYM_KEY, null);
 if (gym && gym.date !== todayStr()) gym = null;   // yesterday's unfinished workout is dropped
 let wakeLock = null, tick = null, restRang = false;

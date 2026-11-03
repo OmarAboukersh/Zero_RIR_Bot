@@ -71,3 +71,24 @@ def test_autosync_without_hevy_key_does_nothing(client, monkeypatch):
     monkeypatch.setattr(bot, "HEVY_API_KEY", "")
     r = client.post("/api/autosync")
     assert r.get_json() == {"synced": False, "changed": False, "reason": "no Hevy key"}
+
+
+def test_coach_gets_your_training_as_context(client, monkeypatch):
+    import coach
+    seen = {}
+
+    def fake_ask(system_text, messages, **kw):
+        seen["system"] = system_text
+        return "Looking good."
+    monkeypatch.setattr(coach, "ask_llm", fake_ask)
+    r = client.post("/api/coach", json={"messages": [{"role": "user", "text": "How's push day?"}]})
+    assert r.status_code == 200 and r.get_json()["reply"] == "Looking good."
+    assert "Bench Press (Smith Machine): 92.5kg" in seen["system"]   # current target
+    assert "90x8  90x8" in seen["system"]                              # recent sets
+
+
+def test_coach_without_key_explains_setup(client, monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    assert client.get("/api/coach/status").get_json() == {"enabled": False}
+    r = client.post("/api/coach", json={"messages": [{"role": "user", "text": "hi"}]})
+    assert r.status_code == 400 and r.get_json()["no_key"] is True

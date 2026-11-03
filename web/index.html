@@ -650,6 +650,14 @@ async function openGym() {
   clearInterval(tick); tick = setInterval(updateTimer, 250);
   renderGym();
 }
+function endGym() {
+  // Stop this workout completely (started by accident, or done for today).
+  // Nothing is deleted from Hevy or your history; it just stops tracking it here.
+  gym = null;
+  try { localStorage.removeItem(GYM_KEY); } catch {}
+  closeGym();
+  toast("Workout ended");
+}
 function closeGym() {
   $("#gym").classList.remove("on");
   document.body.style.overflow = "";
@@ -663,17 +671,18 @@ document.addEventListener("visibilitychange", async () => {
   }
 });
 
-const restDefault = ex => (ex.ceiling && ex.ceiling <= 8 ? 180 : 120);   // heavy compounds 3 min, isolations 2 min
+const restDefault = ex => 180;   // 3 min rest for every exercise
 const restFor = ex => loadJSON("zr_rest", {})[ex.exercise] ?? restDefault(ex);
 function setRestFor(ex, secs) { const r = loadJSON("zr_rest", {}); r[ex.exercise] = secs; saveJSON("zr_rest", r); }
 
 /* Plate maths: plates per side for plate-loaded exercises */
-const PLATES = [25, 20, 15, 10, 5, 2.5, 1.25];
+const PLATES = [20, 15, 10, 5, 2.5, 1.25];   // the plates at your gym (no 25s)
 function plateDefaults(name) {
   const n = name.toLowerCase();
   if (n.includes("t bar")) return { bar: 0, sides: 1 };
-  if (n.includes("smith")) return { bar: 20, sides: 2 };
-  if (n.includes("leg press") || n.includes("barbell")) return { bar: 0, sides: 2 };
+  if (n.includes("smith")) return { bar: 0, sides: 2 };       // Smith bar isn't counted in your logged weight
+  if (n.includes("barbell")) return { bar: 20, sides: 2 };    // a real barbell counts as 20 kg
+  if (n.includes("leg press")) return { bar: 0, sides: 2 };
   return null;
 }
 function plateCfg(name) { const d = plateDefaults(name); return d && { ...d, ...(loadJSON("zr_plates", {})[name] || {}) }; }
@@ -713,8 +722,9 @@ function renderGym() {
   body.innerHTML = `
     <div class="g-top">
       <button class="iconbtn" id="gExit" aria-label="Exit gym mode">✕</button>
-      <span class="grow">${esc(gym.key)} · exercise ${i + 1} of ${n}</span>
+      <span class="grow">${esc(gym.key)} · ${i + 1} of ${n}</span>
       <span class="pill">${doneSets}/${allSets} sets</span>
+      <button class="iconbtn" id="gEnd" style="color:var(--bad);white-space:nowrap">End</button>
     </div>
     <div class="g-bar"><i style="width:${allSets ? doneSets / allSets * 100 : 0}%"></i></div>
     <h2 class="g-name">${esc(ex.exercise)}</h2>
@@ -780,6 +790,15 @@ function updateTimer() {
 
 $("#gym").addEventListener("click", e => {
   if (e.target.closest("#gExit")) { closeGym(); return; }
+  const endBtn = e.target.closest("#gEnd");
+  if (endBtn) {
+    // Two taps so a stray touch can't throw away a workout
+    if (endBtn.dataset.armed) { endGym(); return; }
+    endBtn.dataset.armed = "1"; endBtn.textContent = "Tap again";
+    endBtn.style.background = "var(--bad-bg)";
+    setTimeout(() => { if (endBtn.isConnected) { delete endBtn.dataset.armed; endBtn.textContent = "End"; endBtn.style.background = ""; } }, 3000);
+    return;
+  }
   const setBtn = e.target.closest("[data-set]");
   if (setBtn) {
     const ex = gym.exercises[gym.idx], k = +setBtn.dataset.set;

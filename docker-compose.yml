@@ -1,0 +1,31 @@
+# Run the whole thing with one command:   docker compose up -d --build
+#
+# Your data stays in this folder (workouts.csv, models/, exercise_settings.json,
+# .env ...), mounted into the container at /data. To move to another machine,
+# copy the folder and run the same command there.
+services:
+  web:
+    build: .
+    container_name: zero-rir
+    restart: unless-stopped          # comes back by itself after a reboot
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/data
+    env_file: .env
+    environment:
+      SYNC_EVERY_MINUTES: "60"       # pull from Hevy every hour (replaces run_bot.bat)
+
+  # Optional: run the Cloudflare Tunnel in Docker too (instead of the Windows
+  # service). Uncomment, put TUNNEL_TOKEN="..." in .env (Cloudflare dashboard ->
+  # Tunnels -> your tunnel -> install command), and change the tunnel's route
+  # service from http://localhost:8000 to http://web:8000.
+  #
+  # cloudflared:
+  #   image: cloudflare/cloudflared:2025.10.0
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+  #   depends_on:
+  #     - web

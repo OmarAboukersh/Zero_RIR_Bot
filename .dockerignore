@@ -1,0 +1,5 @@
+# Only code goes into the image; data is mounted at runtime
+*
+!requirements.txt
+!*.py
+!web/

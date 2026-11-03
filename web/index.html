@@ -63,7 +63,7 @@ header h1 { font-size: 18px; margin: 0; flex: 1; min-width: 0; white-space: nowr
 
 nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--card);
   border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
-nav .wrap { display: grid; grid-template-columns: repeat(6, 1fr); padding: 0 2px; }
+nav .wrap { display: grid; grid-template-columns: repeat(5, 1fr); padding: 0 4px; }
 nav button { background: none; border: 0; padding: 9px 0 8px; display: flex; flex-direction: column;
   align-items: center; gap: 3px; font-size: 11px; color: var(--faint); cursor: pointer; }
 nav button svg { width: 22px; height: 22px; }
@@ -121,22 +121,6 @@ select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: 0;
   padding: 7px 14px; font-size: 14px; cursor: pointer; }
 .seg.on { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
 
-.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0; }
-.metric { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
-.metric span { display: block; font-size: 12px; color: var(--muted); }
-.metric b { font-size: 20px; font-variant-numeric: tabular-nums; }
-.chart { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 8px 6px; }
-.chart svg { display: block; width: 100%; height: auto; }
-.chart-head { display: flex; justify-content: space-between; align-items: center; padding: 0 6px 6px; font-size: 13px; color: var(--muted); }
-.range { display: flex; gap: 4px; }
-.range button { background: none; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; padding: 2px 8px; cursor: pointer; color: var(--muted); }
-.range button.on { background: var(--card2); color: var(--text); }
-table.log { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 14px; font-variant-numeric: tabular-nums; }
-table.log th { text-align: left; color: var(--faint); font-weight: 500; padding: 6px 4px; border-bottom: 1px solid var(--line); }
-table.log td { padding: 8px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
-table.log td.sets { font-family: var(--mono); font-size: 12.5px; }
-.tablewrap { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 4px 10px; margin-top: 14px; overflow-x: auto; }
-.tablewrap table.log { margin: 0; }
 
 .week { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; font-size: 15px; }
 .week p { margin: 0 0 6px; } .week .gap { height: 10px; }
@@ -225,10 +209,6 @@ pre.joblog { background: var(--card2); border-radius: 10px; padding: 10px; font-
     <div class="segs" id="planSegs"></div>
     <div id="planBody"></div>
   </section>
-  <section class="view" id="v-stats">
-    <select id="statsPick" aria-label="Exercise"></select>
-    <div id="statsBody"></div>
-  </section>
   <section class="view" id="v-week"></section>
   <section class="view" id="v-coach"></section>
   <section class="view" id="v-settings">
@@ -241,7 +221,6 @@ pre.joblog { background: var(--card2); border-radius: 10px; padding: 10px; font-
   <div class="wrap">
     <button data-v="today" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 7v10M18 7v10M3 10v4M21 10v4M6 12h12"/></svg>Today</button>
     <button data-v="plan"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="5" width="16" height="16" rx="2"/><path d="M16 3v4M8 3v4M4 11h16"/></svg>All days</button>
-    <button data-v="stats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19h16M7 15l4-5 3 3 5-7"/></svg>Stats</button>
     <button data-v="week"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/></svg>Week</button>
     <button data-v="coach"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/></svg>Coach</button>
     <button data-v="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Settings</button>
@@ -319,7 +298,7 @@ $("#pinForm").addEventListener("submit", async e => {
 $("#pinInput").addEventListener("input", () => $("#pinErr").textContent = "");
 
 /* ---------- Navigation ---------- */
-const TITLES = { today: "Today", plan: "All days", stats: "Stats", week: "This week", coach: "Coach", settings: "Settings" };
+const TITLES = { today: "Today", plan: "All days", week: "This week", coach: "Coach", settings: "Settings" };
 let current = "today";
 function go(v) {
   current = v;
@@ -339,7 +318,6 @@ function fail(el, e) { el.innerHTML = `<div class="err">${esc(e.message)}</div>`
 function load(v, force) {
   if (v === "today") loadToday(force);
   if (v === "plan") loadPlan(force);
-  if (v === "stats") loadStats();
   if (v === "week") loadWeek(force);
   if (v === "settings") loadSettings(force);
   if (v === "coach") loadCoach();
@@ -376,7 +354,6 @@ function exCard(t, i) {
     ${targetBlock(t)}
     <div class="ex-foot">
       <span class="grow">${esc(cleanLead(t.trend))}${ml}</span>
-      <button class="link" data-act="stats">Stats</button>
       <button class="link" data-act="swap">Swap</button>
     </div>
     <div class="swap-area"></div>
@@ -394,7 +371,6 @@ document.addEventListener("click", async e => {
   if (!btn) return;
   const card = btn.closest(".ex");
   const name = card?.dataset.ex;
-  if (btn.dataset.act === "stats") { statsWanted = name; go("stats"); }
   if (btn.dataset.act === "swap") {
     const area = $(".swap-area", card);
     if (area.innerHTML) { area.innerHTML = ""; return; }
@@ -447,83 +423,6 @@ $("#planSegs").addEventListener("click", e => {
   const b = e.target.closest(".seg"); if (!b) return;
   planSel = +b.dataset.i; loadPlan();
 });
-
-/* ---------- Stats ---------- */
-let statsWanted = null, statsRange = 20, statsData = null;
-async function loadStats() {
-  const pick = $("#statsPick");
-  if (!pick.options.length) pick.innerHTML = exercises.map(x => `<option>${esc(x)}</option>`).join("");
-  if (statsWanted) { pick.value = statsWanted; statsWanted = null; }
-  else if (statsData) return;
-  const body = $("#statsBody");
-  body.innerHTML = '<div class="skel" style="margin-top:14px;height:260px"></div>';
-  try { statsData = await api("stats?exercise=" + encodeURIComponent(pick.value)); renderStats(); }
-  catch (e) { fail(body, e); }
-}
-$("#statsPick").addEventListener("change", () => { statsWanted = $("#statsPick").value; loadStats(); });
-
-function renderStats() {
-  const d = statsData;
-  const ch = d.change > 0 ? "+" + fmt(d.change) : fmt(d.change);
-  const momCls = d.momentum === "Strong" ? "up" : d.momentum === "Fading" ? "bad" : "";
-  $("#statsBody").innerHTML = `
-    <div class="metrics">
-      <div class="metric"><span>Best ever</span><b>${fmt(d.best)}</b> kg</div>
-      <div class="metric"><span>Change (${d.sessions_analyzed})</span><b>${ch}</b> kg</div>
-      <div class="metric"><span>Momentum</span><b class="pill ${momCls}" style="font-size:14px">${esc(d.momentum)}</b></div>
-    </div>
-    ${d.plateau ? `<div class="banner" style="background:var(--bad-bg);color:var(--bad)"><b>Plateau</b>Same weight for ${d.plateau} sessions.</div>` : ""}
-    <div class="chart">
-      <div class="chart-head"><span>Top set weight (kg)</span>
-        <div class="range">${[10, 20, 0].map(n => `<button data-n="${n}" class="${n === statsRange ? "on" : ""}">${n || "All"}</button>`).join("")}</div>
-      </div>
-      <div id="chartBox"></div>
-    </div>
-    <div class="tablewrap">
-      <table class="log"><thead><tr><th>Date</th><th>Sets (kg × reps)</th></tr></thead>
-      <tbody>${d.sessions.slice(-10).reverse().map(s => `
-        <tr><td>${new Date(s.date + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" })}<br><span style="color:var(--faint);font-size:11px">${esc(s.workout)}</span></td>
-        <td class="sets">${s.sets.map(([w, r]) => `${fmt(w)}×${r}`).join("&nbsp;&nbsp;")}</td></tr>`).join("")}
-      </tbody></table>
-    </div>`;
-  drawChart();
-  document.querySelectorAll(".range button").forEach(b => b.addEventListener("click", () => {
-    statsRange = +b.dataset.n;
-    document.querySelectorAll(".range button").forEach(x => x.classList.toggle("on", x === b));
-    drawChart();
-  }));
-}
-
-function drawChart() {
-  const all = statsData.sessions;
-  const pts = statsRange ? all.slice(-statsRange) : all;
-  const W = 600, H = 220, L = 38, R = 12, T = 12, B = 26;
-  const ys = pts.map(p => p.top);
-  let lo = Math.min(...ys), hi = Math.max(...ys);
-  if (hi - lo < 4) { lo -= 2; hi += 2; }
-  const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
-  const x = i => L + (pts.length === 1 ? (W - L - R) / 2 : i * (W - L - R) / (pts.length - 1));
-  const y = v => T + (hi - v) * (H - T - B) / (hi - lo);
-  const ticks = 4, grid = [];
-  for (let k = 0; k <= ticks; k++) {
-    const v = lo + (hi - lo) * k / ticks;
-    grid.push(`<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="11" fill="var(--faint)">${Math.round(v)}</text>`);
-  }
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.top).toFixed(1)}`).join("");
-  const area = `${line}L${x(pts.length - 1)},${H - B}L${x(0)},${H - B}Z`;
-  const step = Math.max(1, Math.ceil(pts.length / 5));
-  const labels = pts.map((p, i) => (i % step === 0 || i === pts.length - 1) && !(i !== pts.length - 1 && pts.length - 1 - i < step / 2)
-    ? `<text x="${x(i)}" y="${H - 6}" text-anchor="${i === pts.length - 1 && pts.length > 1 ? "end" : i === 0 && pts.length > 1 ? "start" : "middle"}" font-size="11" fill="var(--faint)">${new Date(p.date + "T00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" })}</text>` : "").join("");
-  const dots = pts.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.top)}" r="${pts.length > 40 ? 2 : 3.5}" fill="var(--accent)"><title>${p.date}: ${fmt(p.top)} kg</title></circle>`).join("");
-  const last = pts[pts.length - 1];
-  $("#chartBox").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Top set weight over time">
-    ${grid.join("")}
-    <path d="${area}" fill="var(--accent)" opacity=".1"/>
-    <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
-    ${dots}${labels}
-    <text x="${x(pts.length - 1) - 6}" y="${y(last.top) - 10}" text-anchor="end" font-size="12" font-weight="700" fill="var(--text)">${fmt(last.top)}</text>
-  </svg>`;
-}
 
 /* ---------- Week ---------- */
 function mdLite(text) {
@@ -612,7 +511,7 @@ async function runJob(path, btn, label, body = {}) {
   try {
     const r = await api(path, body);
     log.textContent = r.log;
-    Object.keys(cache).forEach(k => delete cache[k]); statsData = null;
+    Object.keys(cache).forEach(k => delete cache[k]);
     toast("Done");
   } catch (e) { log.textContent = e.message; }
   document.querySelectorAll(".sheet .btn").forEach(b => b.disabled = false);
@@ -750,7 +649,7 @@ async function autoSync() {
   try {
     const r = await api("autosync", {});
     if (r.changed) {
-      Object.keys(cache).forEach(k => delete cache[k]); statsData = null;
+      Object.keys(cache).forEach(k => delete cache[k]);
       load(current, true);
       toast("New workout synced from Hevy");
     }

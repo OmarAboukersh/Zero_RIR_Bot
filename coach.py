@@ -6,8 +6,9 @@ Uses Google's Gemini API (free tier is plenty for one person):
   1. Get a key at https://aistudio.google.com/apikey (sign in with Google, "Create API key")
   2. Add to .env:   GEMINI_API_KEY="your key"
   3. Restart the web app.
-Optional: GEMINI_MODEL (default "gemini-flash-latest", Google's alias for its
-newest fast model).
+Optional: GEMINI_MODEL (default "gemini-2.5-flash", Google's stable fast model).
+If a model is busy (503) the coach retries once, then falls back to the newest
+fast model and then the lite one, so a busy server rarely means no answer.
 
 Note: your training data (exercise names, weights, reps, RPE) is sent to Google
 with each question so the coach can answer about it.
@@ -18,6 +19,7 @@ means changing that one function.
 
 import datetime
 import os
+import time
 
 import requests
 
@@ -106,7 +108,10 @@ def clean_messages(messages):
         text = str(m.get("text", "")).strip() if isinstance(m, dict) else ""
         if role not in ("user", "model") or not text:
             continue
-        out.append({"role": role, "text": text[:MAX_MESSAGE_CHARS]})
+        if out and out[-1]["role"] == role:
+            out[-1]["text"] = (out[-1]["text"] + "\n\n" + text)[:MAX_MESSAGE_CHARS]
+        else:
+            out.append({"role": role, "text": text[:MAX_MESSAGE_CHARS]})
     # Gemini wants the conversation to start with the user and end with the user
     while out and out[0]["role"] != "user":
         out.pop(0)
@@ -115,26 +120,31 @@ def clean_messages(messages):
     return out
 
 
-def ask_llm(system_text, messages, api_key=None, model=None, timeout=60):
-    """Send the conversation to Gemini and return the coach's reply text."""
-    api_key = (api_key if api_key is not None else os.getenv("GEMINI_API_KEY", "")).strip()
-    model = (model or os.getenv("GEMINI_MODEL", "") or "gemini-flash-latest").strip()
-    if not api_key:
-        raise CoachError("NO_KEY")
+# Tried in order. Google's free tier often answers 503 ("overloaded") for its
+# newest model, so a busy model falls back to the next one instead of failing.
+FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash-lite"]
+RETRY_STATUSES = (500, 502, 503, 504)
 
-    body = {
-        "system_instruction": {"parts": [{"text": system_text}]},
-        "contents": [{"role": m["role"], "parts": [{"text": m["text"]}]} for m in messages],
-        "generationConfig": {"temperature": 0.6, "maxOutputTokens": 4096},
-    }
+
+class _TryNext(Exception):
+    """This model can't answer right now; try the next one."""
+
+
+def _call_model(model, body, api_key, timeout):
     try:
         r = requests.post(GEMINI_URL.format(model=model), json=body,
                           headers={"x-goog-api-key": api_key}, timeout=timeout)
+    except requests.Timeout:
+        raise _TryNext(f"{model}: timed out")
     except requests.RequestException as e:
         raise CoachError(f"Couldn't reach Gemini ({type(e).__name__}). Check the laptop's internet connection.")
 
+    if r.status_code in RETRY_STATUSES:
+        raise _TryNext(f"{model}: busy ({r.status_code})")
     if r.status_code == 429:
-        raise CoachError("Gemini's free limit is used up for the moment. Try again in a minute.")
+        raise _TryNext(f"{model}: free limit reached")
+    if r.status_code == 404:
+        raise _TryNext(f"{model}: unknown model")
     if r.status_code in (400, 401, 403):
         detail = ""
         try:
@@ -144,10 +154,8 @@ def ask_llm(system_text, messages, api_key=None, model=None, timeout=60):
         if "API key" in detail or r.status_code in (401, 403):
             raise CoachError("Gemini rejected the API key. Check GEMINI_API_KEY in .env and restart the app.")
         raise CoachError(f"Gemini couldn't handle that request: {detail or r.status_code}")
-    if r.status_code == 404:
-        raise CoachError(f"Gemini doesn't know the model '{model}'. Set GEMINI_MODEL in .env to a current model name.")
     if not r.ok:
-        raise CoachError(f"Gemini error {r.status_code}. Try again in a bit.")
+        raise _TryNext(f"{model}: error {r.status_code}")
 
     data = r.json()
     candidates = data.get("candidates") or []
@@ -157,10 +165,44 @@ def ask_llm(system_text, messages, api_key=None, model=None, timeout=60):
     parts = candidates[0].get("content", {}).get("parts", [])
     text = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
     if not text:
-        raise CoachError("Gemini sent an empty answer. Try again.")
+        raise _TryNext(f"{model}: empty answer")
     if candidates[0].get("finishReason") == "MAX_TOKENS":
         text += "\n\n(cut off; ask me to continue)"
     return text
+
+
+def ask_llm(system_text, messages, api_key=None, model=None, timeout=45, retry_wait=1.5):
+    """Send the conversation to Gemini and return the coach's reply text.
+    Tries your model (GEMINI_MODEL, default gemini-2.5-flash), retrying once if
+    it's busy, then the fallback models."""
+    api_key = (api_key if api_key is not None else os.getenv("GEMINI_API_KEY", "")).strip()
+    first = (model or os.getenv("GEMINI_MODEL", "") or "gemini-2.5-flash").strip()
+    if not api_key:
+        raise CoachError("NO_KEY")
+
+    body = {
+        "system_instruction": {"parts": [{"text": system_text}]},
+        "contents": [{"role": m["role"], "parts": [{"text": m["text"]}]} for m in messages],
+        "generationConfig": {"temperature": 0.6, "maxOutputTokens": 4096},
+    }
+    models = [first] + [m for m in FALLBACK_MODELS if m != first]
+    problems = []
+    for i, m in enumerate(models):
+        for attempt in range(2 if i == 0 else 1):
+            try:
+                return _call_model(m, body, api_key, timeout)
+            except _TryNext as e:
+                problems.append(str(e))
+                if attempt == 0 and i == 0 and retry_wait:
+                    time.sleep(retry_wait)
+    print("⚠️ Coach: every Gemini model failed: " + "; ".join(problems))
+    if all("free limit" in p for p in problems):
+        raise CoachError("Gemini's free limit is used up for now. Try again in a few minutes.")
+    if all("unknown model" in p for p in problems):
+        raise CoachError(f"Gemini doesn't know the model '{first}'. Set GEMINI_MODEL in .env to a current model name.")
+    if all("empty answer" in p for p in problems):
+        raise CoachError("Gemini sent an empty answer. Try again.")
+    raise CoachError("Gemini is overloaded right now (that's on Google's side). Try again in a minute.")
 
 
 def ask_coach(messages, context_text, **kwargs):

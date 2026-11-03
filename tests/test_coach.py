@@ -20,6 +20,11 @@ def reply(text, finish="STOP"):
     return {"candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": finish}]}
 
 
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    monkeypatch.setattr(coach.time, "sleep", lambda s: None)
+
+
 @pytest.fixture
 def fake_gemini(monkeypatch):
     calls = []
@@ -56,10 +61,11 @@ def test_missing_key_is_reported(monkeypatch):
 
 @pytest.mark.parametrize("status,payload,msg", [
     (429, {}, "free limit"),
+    (503, {}, "overloaded"),
     (403, {"error": {"message": "denied"}}, "rejected the API key"),
     (400, {"error": {"message": "API key not valid"}}, "rejected the API key"),
     (404, {}, "doesn't know the model"),
-    (500, {}, "error 500"),
+    (500, {}, "overloaded"),
     (200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}}, "SAFETY"),
     (200, reply(""), "empty answer"),
 ])
@@ -88,3 +94,24 @@ def test_history_is_trimmed_and_must_end_with_user():
         coach.clean_messages([{"role": "user", "text": "hi"}, {"role": "model", "text": "yo"}])
     with pytest.raises(coach.CoachError):
         coach.clean_messages([])
+
+
+def test_busy_model_falls_back_to_the_next_one(monkeypatch):
+    tried = []
+
+    def fake_post(url, json, headers, timeout):
+        model = url.split("/models/")[1].split(":")[0]
+        tried.append(model)
+        if model == "gemini-2.5-flash":
+            return FakeResponse(503, {"error": {"message": "The model is overloaded."}})
+        return FakeResponse(200, reply(f"answer from {model}"))
+    monkeypatch.setattr(coach.requests, "post", fake_post)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    assert coach.ask_coach(HELLO, "ctx", api_key="k") == "answer from gemini-flash-latest"
+    assert tried == ["gemini-2.5-flash", "gemini-2.5-flash", "gemini-flash-latest"]   # one retry, then fallback
+
+
+def test_unanswered_questions_are_merged():
+    out = coach.clean_messages([{"role": "user", "text": "How did my last workout go?"},
+                                {"role": "user", "text": "test"}])
+    assert out == [{"role": "user", "text": "How did my last workout go?\n\ntest"}]

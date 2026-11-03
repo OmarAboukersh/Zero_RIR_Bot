@@ -594,11 +594,12 @@ function renderChat() {
   const el = $("#v-coach");
   const msgs = chat.map(m => m.role === "user"
     ? `<div class="msg user">${esc(m.text).replace(/\n/g, "<br>")}</div>`
-    : m.role === "err" ? `<div class="msg err">${esc(m.text)}</div>`
+    : m.role === "err" ? `<div class="msg err">${esc(m.text)}<br><button class="link" data-retry style="padding:6px 0 0">Try again</button></div>`
     : `<div class="msg model">${coachMd(m.text)}</div>`).join("");
   el.innerHTML = `
     ${chat.length ? "" : `<p class="coach-intro">Ask anything about your training. I can see your targets, your last few sessions of every exercise, your settings and this week's summary.</p>`}
-    <div class="chat" id="chatList">${msgs}${coachBusy ? '<div class="typing">Coach is typing…</div>' : ""}</div>
+    <div class="chat" id="chatList">${msgs}${coachBusy ? '<div class="typing">Coach is typing…</div>'
+      : (chat.length && chat[chat.length - 1].role === "user" ? '<div class="msg err">No answer yet.<br><button class="link" data-retry style="padding:6px 0 0">Try again</button></div>' : "")}</div>
     ${chat.length ? "" : `<div class="chips">${QUICK.map(q => `<button class="chip" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>`}
     <form class="composer" id="composer">
       <textarea id="coachInput" rows="1" placeholder="Message your coach" aria-label="Message your coach"></textarea>
@@ -612,12 +613,13 @@ function renderChat() {
   window.scrollTo(0, document.body.scrollHeight);
 }
 
-async function sendCoach(text) {
+async function sendCoach(text, retry = false) {
   text = (text || "").trim();
-  if (!text) { toast("Type a message first"); return; }
+  if (!text && !retry) { toast("Type a message first"); return; }
   if (coachBusy) return;
   chat = chat.filter(m => m.role !== "err");
-  chat.push({ role: "user", text });
+  if (!retry) chat.push({ role: "user", text });
+  if (!chat.length || chat[chat.length - 1].role !== "user") return;
   coachBusy = true; renderChat();
   try {
     const r = await api("coach", { messages: chat.filter(m => m.role !== "err").slice(-20) });
@@ -634,6 +636,7 @@ async function sendCoach(text) {
 $("#v-coach").addEventListener("click", e => {
   const chip = e.target.closest("[data-q]");
   if (chip) { sendCoach(chip.dataset.q); return; }
+  if (e.target.closest("[data-retry]")) { sendCoach("", true); return; }
   if (e.target.closest("#clearChat")) { chat = []; saveJSON(COACH_KEY, chat); renderChat(); }
 });
 

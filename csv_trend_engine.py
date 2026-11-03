@@ -14,6 +14,7 @@ import os
 import re
 import json
 import math
+import datetime
 import numpy as np
 import pandas as pd
 import joblib
@@ -29,10 +30,22 @@ MODEL_METADATA_FILE = os.path.join(MODELS_DIR, "model_metadata.json")
 TREND_WINDOW = 60       # Sessions for linear regression trend analysis
 MOMENTUM_WINDOW = 15    # Sessions for recent momentum scoring
 PLATEAU_MIN_SESSIONS = 8  # Minimum flat sessions to declare a plateau
+BLOCK_GAP_DAYS = 60       # A break longer than this starts a new training block
+BLOCK_SHIFT_RATIO = 0.2   # A lasting weight change of 20%+ starts a new block (new machine/gym)
+
+WORKING_SET_RATIO = 0.9   # Sets lighter than 90% of the top set are back-off sets / logging mistakes
+REP_BAR_LOOKBACK = 6      # Recent sessions checked for the best reps at the current weight
+WEIGHT_TOLERANCE = 0.5    # kg — treat 78.5 and 78.8 as the same weight
+
+CONSOLIDATE_SESSIONS = 2  # A new rep best must be matched this many times...
+CONSOLIDATE_DAYS = 14     # ...over at least this many days before adding another rep (unless RPE says go)
 
 MAX_VALID_REPS = 50        # Anything above this is a logging typo (e.g. 1976 reps)
 DELOAD_DROP_RATIO = 0.8    # Weight below 80% of the last working weight = deload candidate
-DELOAD_RECOVER_RATIO = 0.9 # ...confirmed if the next session is back to 90%+ of it
+DELOAD_RECOVER_RATIO = 0.9 # ...confirmed if it gets back to 90%+ of it
+DELOAD_MAX_SESSIONS = 3    # ...within this many sessions (a deload week can have several light sessions)
+
+SPLIT_LOOKBACK_SESSIONS = 3  # An exercise stays in a split's plan until it's skipped this many sessions in a row
 
 # Import exercise config from bot.py
 import sys
@@ -46,6 +59,25 @@ SPLIT_NAMES = {
     "Push + Quads": ["push + quad"],
     "Pull + Ham": ["Pull + ham"],
 }
+
+# One-off swaps in a split's exercise list. The next targets for a split are
+# built from its most recent session; when that session is the given date, the
+# "from" exercise is replaced by "to" (targets come from the "to" exercise's own
+# history). It stops applying by itself once you log that split again.
+# Permanent swaps: when you move on from an exercise for good (e.g. the machine
+# is maxed out), map the old one to its replacement. Every split that had the
+# old exercise gets the new one in the same spot, and the old one never comes
+# back to the plan. Its history stays in the CSV and in Stats.
+EXERCISE_REPLACEMENTS = {
+    "Lying Leg Curl (Machine)": "Lying Leg Curl Single Leg (Machine)",  # maxed at 100kg
+    "Calf Press (Machine)": "Calf Press Single Leg (Machine)",          # maxed at 130kg
+}
+
+SPLIT_SWAPS = [
+    # Oct 10: leg press was done by accident instead of the Smith squat
+    {"split": "push + quad", "date": "2026-10-10",
+     "from": "Leg Press (Machine)", "to": "Squat (Smith Machine)"},
+]
 
 # Reverse mapping: CSV title -> standard key
 CSV_TITLE_TO_KEY = {}
@@ -80,6 +112,13 @@ def load_csv(exclude_deloads=True):
     # Drop impossible values from logging typos
     df = df[(df['reps'] > 0) & (df['reps'] <= MAX_VALID_REPS) & (df['weight_kg'] >= 0)]
     df['start_time'] = pd.to_datetime(df['start_time'])
+    # Hevy sometimes changes an exercise's capitalisation (e.g. "reverse curl (cable)"
+    # -> "Reverse Curl (Cable)"). Merge the variants under the most recent spelling
+    # so the full history is one exercise instead of an old and a new one.
+    df['exercise_title'] = df['exercise_title'].str.strip()
+    title_key = df['exercise_title'].str.lower()
+    latest_spelling = df.sort_values('start_time').groupby(title_key)['exercise_title'].last()
+    df['exercise_title'] = title_key.map(latest_spelling)
     df['set_index'] = pd.to_numeric(df['set_index'], errors='coerce').fillna(0)
     df = df.sort_values(['start_time', 'set_index'])
     df['session_date'] = df['start_time'].dt.date
@@ -118,14 +157,15 @@ def _detect_untagged_deloads(df):
     Find workouts that look like deloads even though they weren't tagged.
 
     An exercise "votes deload" when its weight drops below DELOAD_DROP_RATIO of
-    the last working weight AND the next session goes back up to at least
-    DELOAD_RECOVER_RATIO of it (or there is no next session yet). The recovery
-    check stops a gym switch or a genuine reset from being mistaken for a deload.
+    the last working weight AND it goes back up to at least DELOAD_RECOVER_RATIO
+    of it within DELOAD_MAX_SESSIONS sessions (or history ends while still light).
+    The recovery check stops a gym switch or a genuine reset from being mistaken
+    for a deload.
 
     A workout is a deload when at least 2 exercises, and at least half of the
     exercises that have a previous session, vote deload. Outside such workouts,
     a single exercise is still dropped when its dip is confirmed by a recovery
-    in the following session (e.g. benching 50kg for one day between 90kg days).
+    (e.g. benching 50kg for one day between 90kg days).
 
     Returns (set of (session_date, title) workout keys,
              set of (session_date, title, exercise_title) exercise keys).
@@ -153,10 +193,10 @@ def _detect_untagged_deloads(df):
                 continue
             ex_hist = history[ex]
             pos = next(i for i, (d, t, _) in enumerate(ex_hist) if d == date and t == title)
-            next_weight = ex_hist[pos + 1][2] if pos + 1 < len(ex_hist) else None
-            if next_weight is None or next_weight >= DELOAD_RECOVER_RATIO * ref:
+            recovered = _recovers_after_dip([w for _, _, w in ex_hist[pos + 1:]], ref)
+            if recovered is not False:
                 votes += 1
-                if next_weight is not None:
+                if recovered:
                     confirmed.add(ex)
 
         if votes >= 2 and votes >= compared / 2:
@@ -169,6 +209,26 @@ def _detect_untagged_deloads(df):
                     last_working[ex] = weight
 
     return deloads, deload_exercises
+
+
+def _recovers_after_dip(later_weights, ref):
+    """
+    Did the weight come back after a dip below DELOAD_DROP_RATIO of `ref`?
+
+    Looks up to DELOAD_MAX_SESSIONS sessions ahead so a deload week with several
+    light sessions is still recognised.
+
+    Returns True (back to DELOAD_RECOVER_RATIO of ref), False (settled at a new
+    lower level, or stayed low too long — not a deload), or None (history ends
+    while still light: possibly an ongoing deload).
+    """
+    window = later_weights[:DELOAD_MAX_SESSIONS]
+    for w in window:
+        if w >= DELOAD_RECOVER_RATIO * ref:
+            return True
+        if w >= DELOAD_DROP_RATIO * ref:
+            return False
+    return None if len(window) < DELOAD_MAX_SESSIONS else False
 
 
 def _find_csv_name(exercise_name, csv_exercises):
@@ -232,10 +292,36 @@ def get_exercise_sessions(df, exercise_name, max_sessions=30):
 # Trend Analysis
 # ---------------------------------------------------------------------------
 
+def current_block(sessions_df):
+    """
+    Return only the sessions since the last big break or lasting weight shift.
+
+    A new block starts after a gap of more than BLOCK_GAP_DAYS, or when the
+    weight changes by more than BLOCK_SHIFT_RATIO from the previous session
+    (deloads are already filtered out, so a jump this big means a new machine,
+    gym, or a fresh start). Comparing against an older block would make a
+    different machine's numbers look like progress or regression.
+    """
+    if len(sessions_df) < 2:
+        return sessions_df
+
+    dates = pd.to_datetime(sessions_df['session_date']).values
+    weights = sessions_df['max_weight'].values
+    start = 0
+    for i in range(1, len(sessions_df)):
+        gap_days = (dates[i] - dates[i - 1]) / np.timedelta64(1, 'D')
+        prev = weights[i - 1]
+        shifted = prev > 0 and abs(weights[i] - prev) / prev > BLOCK_SHIFT_RATIO
+        if gap_days > BLOCK_GAP_DAYS or shifted:
+            start = i
+    return sessions_df.iloc[start:].reset_index(drop=True)
+
+
 def analyze_trend(sessions_df):
     """
-    Analyze long-term trends from session-level data.
-    
+    Analyze trends from session-level data, using only the current block of
+    training (see current_block) so old machines/gyms don't distort it.
+
     Returns a TrendReport dict:
       - weight_trend_slope: kg per session (from linear regression)
       - weight_trend_label: "Rising" / "Stable" / "Declining"
@@ -245,20 +331,22 @@ def analyze_trend(sessions_df):
       - plateau_sessions: how many sessions the plateau has lasted
       - momentum_score: recent performance vs older performance (>1 = improving)
       - momentum_label: "Strong" / "Steady" / "Fading"
-      - best_weight_ever: all-time max weight
+      - best_weight_ever: max weight across ALL given sessions (not just the block)
       - recent_best_weight: best weight in last MOMENTUM_WINDOW sessions
-      - sessions_analyzed: total sessions used
+      - sessions_analyzed: sessions in the current block
       - weight_change_total: total kg change over the trend window
     """
+    best_weight_ever = float(sessions_df['max_weight'].max()) if len(sessions_df) > 0 else 0
+    sessions_df = current_block(sessions_df)
     n = len(sessions_df)
-    
+
     if n < 3:
         return {
             "weight_trend_slope": 0, "weight_trend_label": "Insufficient data",
             "volume_trend_slope": 0, "volume_trend_label": "Insufficient data",
             "plateau_detected": False, "plateau_sessions": 0,
             "momentum_score": 1.0, "momentum_label": "N/A",
-            "best_weight_ever": sessions_df['max_weight'].max() if n > 0 else 0,
+            "best_weight_ever": best_weight_ever,
             "recent_best_weight": sessions_df['max_weight'].max() if n > 0 else 0,
             "sessions_analyzed": n,
             "weight_change_total": 0,
@@ -307,7 +395,6 @@ def analyze_trend(sessions_df):
             vol_slope, _, _, _, _ = stats.linregress(vol_x, recent_vols)
             
             if vol_slope < 2.0:  # Volume not meaningfully increasing
-                plateau_detected = True
                 # Count how many sessions back the plateau extends
                 all_weights = sessions_df['max_weight'].values
                 mode_weight = np.median(recent_weights)
@@ -316,6 +403,11 @@ def analyze_trend(sessions_df):
                         plateau_sessions += 1
                     else:
                         break
+                # Only a plateau if the weight has actually been flat long enough
+                # (a fresh weight increase at the end breaks it)
+                plateau_detected = plateau_sessions >= PLATEAU_MIN_SESSIONS
+                if not plateau_detected:
+                    plateau_sessions = 0
     
     # --- Momentum scoring ---
     # Compare average volume of last MOMENTUM_WINDOW sessions vs the MOMENTUM_WINDOW before that
@@ -347,7 +439,7 @@ def analyze_trend(sessions_df):
         "plateau_sessions": plateau_sessions,
         "momentum_score": round(momentum, 3),
         "momentum_label": momentum_label,
-        "best_weight_ever": float(sessions_df['max_weight'].max()),
+        "best_weight_ever": best_weight_ever,
         "recent_best_weight": float(sessions_df['max_weight'].tail(MOMENTUM_WINDOW).max()),
         "sessions_analyzed": n,
         "weight_change_total": round(weight_change, 1),
@@ -401,6 +493,52 @@ def get_ml_prediction(exercise_name, session_row):
 # Target Computation (Double Progression + Trends + ML)
 # ---------------------------------------------------------------------------
 
+def _rpe_from_notes(notes):
+    """Read an RPE written in the exercise notes, e.g. "RPE 9" or "rpe: 8.5". Returns None if absent."""
+    match = re.search(r'rpe\s*[:=]?\s*(\d+(?:\.\d+)?)', str(notes or ''), re.IGNORECASE)
+    if match:
+        value = float(match.group(1))
+        if 1 <= value <= 10:
+            return value
+    return None
+
+
+def _rep_goal(rpe, consolidated, rep_bar, times_hit, days_at_bar, cap=None):
+    """
+    Decide the rep goal from the rep bar, based on how hard the last session
+    felt (RPE) and how long the current best has been held.
+
+      RPE 9.5-10  -> hold (tank was empty)
+      RPE 8.5-9   -> wait until the best is consolidated (same as no RPE logged)
+      RPE 7.5-8   -> +1 now (2 reps in reserve)
+      RPE <= 7    -> +2 now (3+ reps in reserve)
+
+    `cap` limits the goal (the rep ceiling), or None for no limit.
+    Returns (goal_reps, explanation).
+    """
+    def goal(add):
+        return rep_bar + add if cap is None else min(rep_bar + add, cap)
+
+    if rpe is not None and rpe >= 9.5:
+        return goal(0), f"RPE {rpe:g}: tank was empty. Hold {goal(0)} reps until it feels easier."
+    if rpe is not None and rpe <= 7:
+        return goal(2), f"RPE {rpe:g}: plenty in the tank. Push for {goal(2)} on every set."
+    if rpe is not None and rpe <= 8:
+        return goal(1), f"RPE {rpe:g}: reps in the tank. Aim for {goal(1)} on every set."
+
+    rpe_str = f"RPE {rpe:g}. " if rpe is not None else ""
+    if consolidated:
+        return goal(1), f"{rpe_str}{rep_bar} reps owned ({times_hit}x over {days_at_bar} days). Aim for {goal(1)} on every set."
+    sessions_left = max(CONSOLIDATE_SESSIONS - times_hit, 0)
+    days_left = max(CONSOLIDATE_DAYS - days_at_bar, 0)
+    wait = []
+    if sessions_left:
+        wait.append(f"{sessions_left} more session{'s' if sessions_left > 1 else ''}")
+    if days_left:
+        wait.append(f"~{days_left} more days")
+    return goal(0), f"{rpe_str}Consolidating {goal(0)} reps on every set. +1 rep after {' and '.join(wait)}."
+
+
 def compute_next_target(exercise_name, sessions_df, config, trend_report, split_last_session=None):
     """
     Compute the next session's target for one exercise.
@@ -419,6 +557,9 @@ def compute_next_target(exercise_name, sessions_df, config, trend_report, split_
     """
     ceiling = config["ceiling"]
     step = config["step"]
+    # strict_ceiling: reps never go above the ceiling, and hitting it on every
+    # set always adds weight, even at RPE 9.5-10
+    strict = config.get("strict_ceiling", False)
     
     if sessions_df.empty:
         return None
@@ -436,55 +577,93 @@ def compute_next_target(exercise_name, sessions_df, config, trend_report, split_
         weights_list = last['weights_list']
         num_sets = last['num_sets']
     
-    # Extract RPE and Notes
-    max_rpe = last.get('max_rpe', 0)
-    if pd.isna(max_rpe): max_rpe = 0
-    
-    notes = str(last.get('exercise_notes', '')).lower()
-    is_maxed = 'max' in notes
-    
+    # --- RPE of the session the target is built from ---
+    # Hevy's per-set RPE field first; "RPE 9" written in the exercise notes as a fallback.
+    if split_last_session is not None:
+        rpe_values = [r for r in split_last_session.get('rpe_list', []) if not pd.isna(r)]
+        last_notes = split_last_session.get('notes', '')
+    else:
+        rpe_values = [] if pd.isna(last.get('max_rpe')) else [last['max_rpe']]
+        last_notes = last.get('exercise_notes', '')
+    max_rpe = max(rpe_values) if rpe_values else _rpe_from_notes(last_notes)
+    rpe_logged = max_rpe is not None
+    if not rpe_logged:
+        max_rpe = 0
+
+    # "max" in the exercise notes means the machine has no more weight to add.
+    # It stays in effect for as long as you're at that weight — you only need to
+    # write it once, and it clears itself if you ever use a heavier weight.
+    notes_at_weight = sessions_df.loc[sessions_df['max_weight'] >= current_weight, 'exercise_notes']
+    is_maxed = notes_at_weight.fillna('').astype(str).str.lower().str.contains('max').any()
+    # A hardcoded machine limit in EXERCISE_CONFIG does the same thing
+    max_weight_limit = config.get("max_weight")
+    if max_weight_limit is not None and current_weight >= max_weight_limit:
+        is_maxed = True
+
+    # --- Working sets ---
+    # Only sets close to the top weight count. Much lighter sets are back-off sets
+    # or Hevy pre-fill mistakes (e.g. a 40kg set left over from a deload week).
+    working_reps = [r for w, r in zip(weights_list, reps_list) if w >= WORKING_SET_RATIO * current_weight]
+
+    # --- Rep bar: best reps recently achieved at this weight or heavier ---
+    # One bad day shouldn't lower the goal: if you hit 8 last week at this
+    # weight, the goal stays 8 even if today you only got 5.
+    recent = current_block(sessions_df).tail(REP_BAR_LOOKBACK)
+    session_bests = []  # (date, best reps at this weight) for each recent session
+    for date, w_list, r_list in zip(recent['session_date'], recent['weights_list'], recent['reps_list']):
+        at_weight = [r for w, r in zip(w_list, r_list) if w >= current_weight - WEIGHT_TOLERANCE]
+        if at_weight:
+            session_bests.append((date, max(at_weight)))
+    rep_bar = max([max(working_reps)] + [best for _, best in session_bests])
+
+    # --- Consolidation: has the rep bar been "owned" for a while? ---
+    # A new rep best has to be matched in CONSOLIDATE_SESSIONS sessions, starting
+    # at least CONSOLIDATE_DAYS ago, before another rep is added.
+    bar_dates = [d for d, best in session_bests if best >= rep_bar]
+    days_at_bar = (datetime.date.today() - min(bar_dates)).days if bar_dates else 0
+    consolidated = len(bar_dates) >= CONSOLIDATE_SESSIONS and days_at_bar >= CONSOLIDATE_DAYS
+
+    rpe_for_reps = max_rpe if rpe_logged else None
+    rep_args = (rpe_for_reps, consolidated, rep_bar, len(bar_dates), days_at_bar)
+
     # --- Double progression logic ---
-    all_hit_ceiling = all(r >= ceiling for r in reps_list)
-    
+    # The target is one rep goal for EVERY set (what to aim for), built from your
+    # best recent set — not a copy of last session's fatigue pattern.
+    # Weight only goes up when the LAST session hit the ceiling on every working set.
+    all_hit_ceiling = all(r >= ceiling for r in working_reps)
+
     if is_maxed:
         math_weight = current_weight
-        if all_hit_ceiling:
-            target_reps = ", ".join(str(r + 1) for r in reps_list)
-            rationale = "🛑 Max weight reached. Slowly adding reps beyond ceiling."
-        else:
-            if max_rpe >= 9.5:
-                target_reps = ", ".join(str(r) for r in reps_list)
-                rationale = f"🛑 Max weight reached. RPE high ({max_rpe}), maintaining."
-            else:
-                target_reps = ", ".join(str(r + 1) for r in reps_list)
-                rationale = "🛑 Max weight reached. Slowly adding reps."
-    else:
-        if all_hit_ceiling:
-            if max_rpe >= 9.5:
-                math_weight = current_weight
-                target_reps = ", ".join(str(ceiling) for _ in reps_list)
-                rationale = f"✅ Ceiling cleared but RPE {max_rpe}. Consolidating."
-            else:
-                bottom_of_range = 5 if ceiling == 8 else 10
-                math_weight = current_weight + step
-                target_reps = str(bottom_of_range)
-                rationale = "✅ Ceiling cleared. Load increased."
-        else:
+        # no ceiling: reps are the only way up (unless the ceiling is strict)
+        goal_reps, rep_reason = _rep_goal(*rep_args, cap=ceiling if strict else None)
+        rationale = f"🛑 Max weight reached. {rep_reason}"
+    elif all_hit_ceiling:
+        if max_rpe >= 9.5 and not strict:
             math_weight = current_weight
-            if max_rpe >= 9.5:
-                target_reps = ", ".join(str(r) for r in reps_list)
-                rationale = f"🔄 Ceiling not met, RPE {max_rpe}. Maintaining reps."
-            else:
-                target_reps = ", ".join(str(min(r + 1, ceiling)) for r in reps_list)
-                rationale = "🔄 Ceiling not met. Add 1 rep."
-    
+            goal_reps = ceiling
+            rationale = f"✅ Ceiling cleared but RPE {max_rpe:g}. Consolidating before adding weight."
+        else:
+            math_weight = current_weight + step
+            if max_weight_limit is not None:
+                math_weight = min(math_weight, max_weight_limit)
+            goal_reps = 5 if ceiling == 8 else 10
+            rationale = "✅ Ceiling cleared. Load increased."
+    else:
+        math_weight = current_weight
+        goal_reps, rep_reason = _rep_goal(*rep_args, cap=ceiling)
+        rationale = f"🔄 {rep_reason}"
+    target_reps = str(goal_reps)
+
     # --- Regression detection from trend ---
     if trend_report["momentum_label"] == "Fading" and trend_report["weight_trend_label"] == "Declining":
         # Weight is trending down AND momentum is fading - flag it
         rationale += " | ⚠️ Regression detected"
-    
+
     # --- Plateau detection from trend ---
-    if trend_report["plateau_detected"]:
+    # Not useful when maxed out: a flat weight is expected there
+    if is_maxed:
+        pass
+    elif trend_report["plateau_detected"]:
         rationale += f" | 🚨 Plateau ({trend_report['plateau_sessions']} sessions)"
     elif trend_report["momentum_label"] == "Strong":
         rationale += " | 📈 Upward momentum"
@@ -501,26 +680,9 @@ def compute_next_target(exercise_name, sessions_df, config, trend_report, split_
     final_weight = round(math_weight, 2)
 
     # --- Format Individual Sets ---
-    target_sets_data = []
-    weight_delta = final_weight - current_weight
+    # Every set uses the same working weight and rep goal
+    target_sets_data = [f"  Set {i+1}: {final_weight:g}kg x {goal_reps}" for i in range(int(num_sets))]
 
-    for i, w in enumerate(weights_list):
-        t_w = round(w + weight_delta, 2)
-        r = reps_list[i]
-        
-        if is_maxed:
-            if all_hit_ceiling:
-                t_r = r + 1
-            else:
-                t_r = r if max_rpe >= 9.5 else r + 1
-        else:
-            if all_hit_ceiling:
-                t_r = ceiling if max_rpe >= 9.5 else (5 if ceiling == 8 else 10)
-            else:
-                t_r = r if max_rpe >= 9.5 else min(r + 1, ceiling)
-                
-        target_sets_data.append(f"  Set {i+1}: {t_w:g}kg x {t_r}")
-        
     formatted_targets = "\n".join(target_sets_data)
     
     # --- Trend summary line ---
@@ -549,32 +711,60 @@ def compute_next_target(exercise_name, sessions_df, config, trend_report, split_
 # Full Blueprint Generation
 # ---------------------------------------------------------------------------
 
+def _session_exercises(session_rows, split_name, session_time):
+    """Exercises of one logged session, in order, matched to EXERCISE_CONFIG keys."""
+    from bot import match_exercise_config
+
+    exercises = []
+    for raw_name in session_rows['exercise_title']:
+        matched = match_exercise_config(raw_name.strip(), fuzzy=False)
+        for swap in SPLIT_SWAPS:
+            if (swap["split"].lower() == split_name.lower().strip()
+                    and str(session_time.date()) == swap["date"] and matched == swap["from"]):
+                matched = swap["to"]
+        matched = EXERCISE_REPLACEMENTS.get(matched, matched)
+        if matched and matched not in exercises:
+            exercises.append(matched)
+    return exercises
+
+
 def get_split_exercises(df, split_name):
     """
-    Find all exercises done in recent sessions of a given split.
+    Find the exercises that belong to a split, in the order you do them.
     Returns a list of exercise names (matched to EXERCISE_CONFIG keys).
+
+    The list is built from the last SPLIT_LOOKBACK_SESSIONS sessions of the
+    split, not just the latest one, so skipping an exercise once (injury, no
+    time, machine taken) doesn't drop it from next week's plan. The latest
+    session sets the order; an exercise missing from it is put back where it
+    was in the older session. An exercise only leaves the plan after it's been
+    skipped SPLIT_LOOKBACK_SESSIONS times in a row.
     """
-    from bot import match_exercise_config
-    
-    # Find all CSV rows for this split
     split_df = df[df['title'].str.strip().str.lower() == split_name.lower().strip()]
-    
     if split_df.empty:
         return []
-    
-    # Get the most recent session of this split to determine the exercise order
-    latest_date = split_df['start_time'].max()
-    latest_session = split_df[split_df['start_time'] == latest_date]
-    
-    # Maintain exercise order from the session
-    seen = set()
-    exercises = []
-    for raw_name in latest_session['exercise_title']:
-        matched = match_exercise_config(raw_name.strip())
-        if matched and matched not in seen:
-            seen.add(matched)
-            exercises.append(matched)
-    
+
+    session_times = sorted(split_df['start_time'].unique(), reverse=True)[:SPLIT_LOOKBACK_SESSIONS]
+    sessions = [
+        _session_exercises(split_df[split_df['start_time'] == t], split_name, pd.Timestamp(t))
+        for t in session_times
+    ]
+
+    def movement(name):
+        # "Lateral Raise (Cable)" and "Lateral Raise (Dumbbell)" are the same movement:
+        # switching between them is a swap, not a skip, so only the newest one is kept
+        return name.split('(')[0].strip().lower()
+
+    exercises = list(sessions[0])
+    for older in sessions[1:]:
+        for i, name in enumerate(older):
+            if name in exercises or movement(name) in {movement(e) for e in exercises}:
+                continue
+            # Put it right after whatever came before it in that older session
+            before = next((older[j] for j in range(i - 1, -1, -1) if older[j] in exercises), None)
+            pos = exercises.index(before) + 1 if before else 0
+            exercises.insert(pos, name)
+
     return exercises
 
 
@@ -629,6 +819,8 @@ def generate_full_blueprint(split_name):
                     'reps_list': list(last_sets['reps'].dropna().astype(int)),
                     'weights_list': list(last_sets['weight_kg'].dropna().astype(float)),
                     'num_sets': len(last_sets),
+                    'rpe_list': list(last_sets['rpe']),
+                    'notes': last_sets['exercise_notes'].dropna().astype(str).iloc[-1] if last_sets['exercise_notes'].notna().any() else '',
                 }
         
         # Run trend analysis (uses ALL sessions across splits)

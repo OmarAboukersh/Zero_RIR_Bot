@@ -18,3 +18,14 @@ models/
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Settings changed in the web app's Settings tab
+exercise_settings.json
+workouts_backup_*.csv
+
+# Runtime / one-off local files
+sync.lock
+_backup_*/
+fix_*.py
+.pytest_cache/
+routines_backup/

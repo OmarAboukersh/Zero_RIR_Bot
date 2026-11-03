@@ -5,8 +5,9 @@ Flow:
   1. Pull latest workout from Hevy API
   2. Append set data to workouts.csv
   3. Run the CSV trend engine to generate next targets
-  4. Send targets via Telegram
+  4. Log the targets (and push them to your phone if ntfy is set up, see notify.py)
   5. Auto-retrain ML models if threshold reached
+  6. Write the new targets into the Hevy routines (hevy_routines.py)
 """
 
 import requests
@@ -21,18 +22,29 @@ import pandas as pd
 def normalize_name(name):
     return name.lower().strip()
 
-def match_exercise_config(hevy_name):
+def match_exercise_config(hevy_name, fuzzy=True):
+    """Match a name to an EXERCISE_CONFIG key.
+
+    fuzzy=True autocorrects typos (for names typed in the web app). Hevy sync uses
+    fuzzy=False: a fuzzy guess there once logged Leg Press as Calf Press, so an
+    exercise that isn't in the list is saved under its own name instead.
+    """
     hevy_norm = normalize_name(hevy_name)
     # 1. Exact match first (most reliable)
     for config_name in EXERCISE_CONFIG.keys():
         if normalize_name(config_name) == hevy_norm:
             return config_name
-    # 2. Substring fallback (only if no exact match found)
-    for config_name in EXERCISE_CONFIG.keys():
-        config_norm = normalize_name(config_name)
-        if config_norm in hevy_norm or hevy_norm in config_norm:
-            return config_name
+    # 2. Substring fallback (only if no exact match found), picking the closest name:
+    #    "lat pulldown" -> "Lat Pulldown (Cable)", not "Reverse Grip Lat Pulldown (Cable)"
+    inside_query = [c for c in EXERCISE_CONFIG if normalize_name(c) in hevy_norm]
+    if inside_query:
+        return max(inside_query, key=len)
+    containing_query = [c for c in EXERCISE_CONFIG if hevy_norm in normalize_name(c)]
+    if containing_query:
+        return min(containing_query, key=len)
     # 3. Fuzzy match (autocorrect spelling errors)
+    if not fuzzy:
+        return None
     import difflib
     all_normalized = {normalize_name(k): k for k in EXERCISE_CONFIG.keys()}
     matches = difflib.get_close_matches(hevy_norm, all_normalized.keys(), n=1, cutoff=0.5)
@@ -48,8 +60,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- CREDENTIALS ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 HEVY_API_KEY = os.getenv("HEVY_API_KEY", "")
 
 # --- IMMUTABLE EXERCISE POOL & CONFIGURATION ---
@@ -57,7 +67,10 @@ EXERCISE_CONFIG = {
     # Compounds (5-8 Rep Range)
     "Bench Press (Smith Machine)": {"ceiling": 8, "step": 2.5},
     "Incline Bench Press (Smith Machine)": {"ceiling": 8, "step": 2.5},
-    "Squat (Smith Machine)": {"ceiling": 8, "step": 2.5},
+    # strict_ceiling: never ask for more than `ceiling` reps; once every set hits it,
+    # the weight goes up no matter how hard it felt (RPE)
+    "Squat (Smith Machine)": {"ceiling": 8, "step": 2.5, "strict_ceiling": True},
+    "Leg Press (Machine)": {"ceiling": 8, "step": 10, "strict_ceiling": True},  # loads in 10kg (2x5kg plates)
     "T Bar Row": {"ceiling": 8, "step": 2.5},
     "Reverse Grip Lat Pulldown (Cable)": {"ceiling": 8, "step": 3.5},  # cable stack moves in 3.5kg plates
     "Lat Pulldown (Cable)": {"ceiling": 8, "step": 3.5},  # cable stack moves in 3.5kg plates
@@ -67,27 +80,85 @@ EXERCISE_CONFIG = {
     # Isolations (10-15 Rep Range)
     "Lateral Raise (Cable)": {"ceiling": 15, "step": 2.5},
     "Lateral Raise (Dumbbell)": {"ceiling": 15, "step": 2.0},
-    "Triceps Pushdown": {"ceiling": 12, "step": 5.0},
+    "Triceps Pushdown": {"ceiling": 8, "step": 3.5, "strict_ceiling": True},  # 8 reps max; 7kg stack plates + 3.5kg add-on = 3.5kg jumps
     "Triceps Extension (Dumbbell)": {"ceiling": 15, "step": 2.0},
     "Crunch (Weighted)": {"ceiling": 15, "step": 2.5},
     "Single Leg Extensions": {"ceiling": 15, "step": 2.5},
     "Rear Delt Reverse Fly (Machine)": {"ceiling": 15, "step": 2.5},
     "Back Extension (Weighted Hyperextension)": {"ceiling": 10, "step": 2.5},
-    "Calf Press (Machine)": {"ceiling": 15, "step": 2.5},
+    "Calf Press (Machine)": {"ceiling": 15, "step": 2.5, "max_weight": 130},  # machine maxed out
+    "Calf Press Single Leg (Machine)": {"ceiling": 15, "step": 2.5},  # replaced the two-leg calf press (Oct 28)
     "Reverse Curl (Cable)": {"ceiling": 11, "step": 2.5},
-    "Lying Leg Curl (Machine)": {"ceiling": 15, "step": 2.5},
-    "Shrug (Cable)": {"ceiling": 15, "step": 2.5},
+    "Lying Leg Curl (Machine)": {"ceiling": 15, "step": 2.5, "max_weight": 100},  # machine maxed out
+    "Lying Leg Curl Single Leg (Machine)": {"ceiling": 15, "step": 2.5},  # replaced the two-leg leg curl (Oct 25)
+    "Shrug (Cable)": {"ceiling": 15, "step": 2.5, "max_weight": 120},  # machine maxed out
     "Preacher curl single arm (machine)": {"ceiling": 10, "step": 2.5},
     "Preacher Curl (Machine)": {"ceiling": 10, "step": 2.5},
     "Bicep Curl (Cable)": {"ceiling": 10, "step": 2.5}
 }
+
+# --- SETTINGS CHANGED FROM THE WEB APP ---
+# The Settings tab saves overrides here; they are layered on
+# top of EXERCISE_CONFIG above. A value of null removes that setting.
+SETTINGS_FILE = "exercise_settings.json"
+DEFAULT_EXERCISE_CONFIG = {name: dict(cfg) for name, cfg in EXERCISE_CONFIG.items()}
+
+
+def _load_settings_overrides():
+    if not os.path.exists(SETTINGS_FILE):
+        return {}
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        print(f"⚠️ Couldn't read {SETTINGS_FILE}: {e}")
+        return {}
+
+
+def apply_settings_overrides():
+    """Rebuild EXERCISE_CONFIG (in place) from the defaults plus saved overrides."""
+    overrides = _load_settings_overrides()
+    for name, defaults in DEFAULT_EXERCISE_CONFIG.items():
+        cfg = dict(defaults)
+        for key, value in overrides.get(name, {}).items():
+            if value is None:
+                cfg.pop(key, None)
+            else:
+                cfg[key] = value
+        EXERCISE_CONFIG[name].clear()
+        EXERCISE_CONFIG[name].update(cfg)
+
+
+def update_exercise_setting(exercise_name, key, value):
+    """Save one setting for an exercise (value None removes it) and apply it immediately."""
+    overrides = _load_settings_overrides()
+    overrides.setdefault(exercise_name, {})[key] = value
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(overrides, f, indent=2, ensure_ascii=False)
+    apply_settings_overrides()
+
+
+def reset_exercise_settings(exercise_name):
+    """Drop all saved overrides for an exercise, going back to the defaults in this file."""
+    overrides = _load_settings_overrides()
+    overrides.pop(exercise_name, None)
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(overrides, f, indent=2, ensure_ascii=False)
+    apply_settings_overrides()
+
+
+apply_settings_overrides()
 
 def get_recent_workouts():
     """Fetches the 10 most recently completed workouts from Hevy."""
     url = "https://api.hevyapp.com/v1/workouts"
     headers = {"api-key": HEVY_API_KEY, "Accept": "application/json"}
     
-    response = requests.get(url, headers=headers)
+    try:
+        response = requests.get(url, headers=headers, timeout=20)
+    except requests.RequestException as e:
+        print(f"❌ Couldn't reach Hevy: {e}")
+        return []
     
     if response.status_code == 200:
         data = response.json()
@@ -107,16 +178,7 @@ def get_recent_workouts():
     return []
 
 
-def send_telegram_message_text(message):
-    """Fires the exact message text to Telegram."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    
-    response = requests.post(url, json=payload)
-    if response.status_code == 200:
-        print("✅ Telegram notification successfully dispatched.")
-    else:
-        print(f"❌ Telegram Error: {response.text}")
+from notify import notify
 
 
 def save_upcoming_targets(workout_name, message_text):
@@ -238,7 +300,33 @@ def auto_retrain_if_needed():
         f.write(str(count))
 
 
+SYNC_LOCK_FILE = "sync.lock"
+SYNC_LOCK_STALE_SECONDS = 600  # a lock older than this is left over from a crash
+
+
 def main():
+    """Sync new Hevy workouts. Only one sync runs at a time, even across processes
+    (the scheduled run_bot.bat and the web app's auto-sync), so a workout can't be
+    appended twice."""
+    import time
+    try:
+        if os.path.exists(SYNC_LOCK_FILE) and time.time() - os.path.getmtime(SYNC_LOCK_FILE) > SYNC_LOCK_STALE_SECONDS:
+            os.remove(SYNC_LOCK_FILE)
+        fd = os.open(SYNC_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        print("⏳ Another sync is already running. Skipping this one.")
+        return
+    try:
+        os.close(fd)
+        _sync()
+    finally:
+        try:
+            os.remove(SYNC_LOCK_FILE)
+        except OSError:
+            pass
+
+
+def _sync():
     recent_workouts = get_recent_workouts()
     if not recent_workouts:
         return
@@ -267,15 +355,19 @@ def main():
         
         exercises = recent_workout.get('exercises', [])
         exercises_for_csv = []
+        untracked = []
         
         for ex in exercises:
             raw_name = ex.get('title', ex.get('exercise', {}).get('title', 'Unknown Exercise')).strip()
-            name = match_exercise_config(raw_name)
+            name = match_exercise_config(raw_name, fuzzy=False)
             
             if not name:
-                continue
+                # Not in EXERCISE_CONFIG: keep the data under its real Hevy name
+                # rather than guessing a similar-looking exercise
+                name = raw_name
+                untracked.append(raw_name)
                 
-            ex_notes = str(ex.get('notes', '')).replace('\n', ' ')
+            ex_notes = str(ex.get('notes') or '').replace('\n', ' ')
             
             # Collect raw set data for CSV append
             raw_sets = ex.get('sets', [])
@@ -298,7 +390,7 @@ def main():
                 f"Your next targets will be based on your last working session — "
                 f"no pollution from the lighter weights. 💪"
             )
-            send_telegram_message_text(deload_msg)
+            notify(deload_msg, title="Deload logged")
             print(f"🟢 Deload workout detected and logged. Skipping target generation.")
         else:
             # 2. Generate trend-based targets from the full CSV history
@@ -306,18 +398,30 @@ def main():
             message_text, targets = generate_full_blueprint(workout_name)
             
             if message_text:
-                # 3. Send immediately via Telegram
-                send_telegram_message_text(message_text)
+                # 3. Log the new targets (phone notification if ntfy is set up)
+                notify(message_text, title=f"Next {workout_name.strip()} targets")
                 
-                # 4. Save to upcoming_targets.json (as cache for telegram_listener)
+                # 4. Save to upcoming_targets.json (cache of the latest targets)
                 save_upcoming_targets(workout_name, message_text)
             else:
                 print(f"⚠️ Trend engine returned no targets for '{workout_name}'")
+        
+        if untracked:
+            names = ", ".join(sorted(set(untracked)))
+            print(f"ℹ️ Not in EXERCISE_CONFIG, saved under own name: {names}")
+            notify(
+                f"ℹ️ Not in your exercise list (saved under its own name, no targets yet): {names}\n"
+                f"Add it to EXERCISE_CONFIG in bot.py to start tracking it."
+            )
         
         # 5. Auto-retrain ML models if enough new data has accumulated
         auto_retrain_if_needed()
         
         save_last_processed_id(workout_id)
+
+    # 6. Put the new targets straight into the Hevy routines
+    from hevy_routines import push_targets_safely
+    push_targets_safely()
 
 
 if __name__ == "__main__":

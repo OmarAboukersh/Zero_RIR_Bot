@@ -28,3 +28,4 @@ sync.lock
 _backup_*/
 fix_*.py
 .pytest_cache/
+routines_backup/

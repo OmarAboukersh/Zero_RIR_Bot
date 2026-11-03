@@ -342,6 +342,7 @@ def api_set_setting():
                 abort(400, description="The rep ceiling must be a whole number.")
             value = int(value)
     core.update_exercise_setting(name, key, value)
+    push_to_hevy_in_background()
     return jsonify(_settings_row(name))
 
 
@@ -350,6 +351,7 @@ def api_reset_settings():
     body = request.get_json(silent=True) or {}
     name = _resolve_exercise(body.get("exercise"))
     core.reset_exercise_settings(name)
+    push_to_hevy_in_background()
     return jsonify(_settings_row(name))
 
 
@@ -362,6 +364,36 @@ def api_sync():
     finally:
         _job_lock.release()
     return jsonify(ok=True, log=log or "Done.")
+
+
+def push_to_hevy_in_background():
+    """A settings change changes targets: update the Hevy routines without making the page wait."""
+    import hevy_routines
+    if not hevy_routines.enabled() or not core.HEVY_API_KEY:
+        return
+
+    def run():
+        if _job_lock.acquire(blocking=False):
+            try:
+                hevy_routines.push_targets_safely()
+            finally:
+                _job_lock.release()
+    threading.Thread(target=run, daemon=True).start()
+
+
+@app.route("/api/hevy/push", methods=["POST"])
+def api_hevy_push():
+    import hevy_routines
+    dry = bool((request.get_json(silent=True) or {}).get("dry_run"))
+    if not _job_lock.acquire(blocking=False):
+        abort(409, description="A sync is running. Try again in a moment.")
+    try:
+        log = _run_captured(lambda: hevy_routines.push_targets(dry_run=dry))
+    except hevy_routines.HevyError as e:
+        return jsonify(error=str(e)), 400
+    finally:
+        _job_lock.release()
+    return jsonify(ok=True, log=log or "Nothing to do.")
 
 
 def coach_context():

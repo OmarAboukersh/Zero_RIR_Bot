@@ -160,46 +160,8 @@ pre.joblog { background: var(--card2); border-radius: 10px; padding: 10px; font-
 .err { background: var(--bad-bg); color: var(--bad); border-radius: var(--r); padding: 14px; font-size: 14px; }
 .empty { color: var(--muted); text-align: center; padding: 40px 0; }
 
-.startbtn { width: 100%; height: 50px; font-size: 17px; margin: 0 0 16px; border-radius: 12px; }
-
-/* ---------- Gym mode ---------- */
-#gym { position: fixed; inset: 0; z-index: 15; background: var(--bg); overflow-y: auto; display: none;
-  padding: env(safe-area-inset-top) 0 calc(96px + env(safe-area-inset-bottom)); }
-#gym.on { display: block; }
-.g-top { display: flex; align-items: center; gap: 10px; padding: 12px 0 8px; }
-.g-top .grow { flex: 1; min-width: 0; font-size: 14px; color: var(--muted); }
-.g-bar { height: 4px; background: var(--card2); border-radius: 4px; overflow: hidden; margin-bottom: 18px; }
-.g-bar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
-.g-name { font-size: 26px; font-weight: 750; line-height: 1.15; margin: 0 0 4px; letter-spacing: -.01em; }
-.g-target { font-size: 52px; font-weight: 800; letter-spacing: -.03em; margin: 10px 0 2px; font-variant-numeric: tabular-nums; }
-.g-target small { font-size: 20px; color: var(--muted); font-weight: 600; }
-.g-last { font-size: 13px; color: var(--muted); margin: 0 0 14px; font-family: var(--mono); }
-.g-sets { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 10px; margin: 16px 0; }
-.g-set { height: 64px; border-radius: 14px; border: 2px solid var(--line); background: var(--card); cursor: pointer;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; }
-.g-set span { font-size: 12px; color: var(--muted); font-weight: 500; }
-.g-set.done { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-.g-set.done span { color: var(--accent-ink); opacity: .75; }
 .g-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; margin-bottom: 12px; }
 .g-card h4 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
-.g-timer { display: flex; align-items: center; gap: 10px; }
-.g-time { font-size: 44px; font-weight: 800; font-variant-numeric: tabular-nums; flex: 1; letter-spacing: -.02em; }
-.g-timer.over .g-time { color: var(--accent); }
-.g-timer button { height: 44px; min-width: 52px; border-radius: 10px; border: 1px solid var(--line); background: var(--card2); font-weight: 650; cursor: pointer; }
-.plates { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 8px; }
-.plate { border-radius: 8px; padding: 6px 10px; font-weight: 750; font-size: 15px; background: var(--card2); border: 1px solid var(--line); }
-.plate.p25, .plate.p20 { background: var(--info-bg); color: var(--info); border-color: transparent; }
-.plate.p15, .plate.p10 { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
-.platecfg { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
-.platecfg input { width: 72px; height: 34px; }
-.platecfg select { width: auto; height: 34px; }
-.g-nav { position: fixed; left: 0; right: 0; bottom: 0; background: var(--bg); border-top: 1px solid var(--line);
-  padding: 12px 0 calc(12px + env(safe-area-inset-bottom)); z-index: 16; display: none; }
-#gym.on + .g-nav { display: block; }
-.g-nav .wrap { display: flex; gap: 10px; }
-.g-nav .btn { flex: 1; height: 52px; font-size: 16px; }
-.g-done { text-align: center; padding: 40px 0; }
-.g-done h2 { font-size: 30px; margin: 10px 0; }
 
 /* ---------- Coach ---------- */
 .chat { display: flex; flex-direction: column; gap: 10px; padding-bottom: 8px; }
@@ -272,10 +234,14 @@ pre.joblog { background: var(--card2); border-radius: 10px; padding: 10px; font-
 <div class="sheet-bg" id="tools">
   <div class="sheet">
     <h3>Update your data</h3>
-    <p>Sync pulls your latest workouts from Hevy. Retrain rebuilds the ML hints (it also happens on its own every 10 workouts).</p>
+    <p>Sync pulls your latest workouts from Hevy, then writes the new targets into your Hevy routines. That also happens by itself after each workout and when you change a setting.</p>
     <div class="row">
       <button class="btn" id="doSync">Sync from Hevy</button>
       <button class="btn ghost" id="doTrain">Retrain models</button>
+    </div>
+    <div class="row">
+      <button class="btn ghost" id="doHevy">Send targets to Hevy</button>
+      <button class="btn ghost" id="doPreview">Preview</button>
     </div>
     <button class="btn ghost" style="width:100%" id="closeTools">Close</button>
     <pre class="joblog" id="jobLog"></pre>
@@ -290,12 +256,6 @@ pre.joblog { background: var(--card2); border-radius: 10px; padding: 10px; font-
     <button class="btn" style="width:100%">Unlock</button>
   </form>
 </div>
-
-<div id="gym"><div class="wrap" id="gymBody"></div></div>
-<div class="g-nav"><div class="wrap">
-  <button class="btn ghost" id="gPrev">Back</button>
-  <button class="btn" id="gNext">Next exercise</button>
-</div></div>
 
 <div class="toast" id="toast"></div>
 
@@ -450,7 +410,7 @@ async function loadToday(force) {
         <span class="pill ${d.is_today ? "today" : ""}">${esc(d.date_label)}</span>
         <span class="pill">${d.exercises.length} exercises · 0 RIR</span>
       </div>
-      ${d.exercises.length ? `<button class="btn startbtn" data-gym="today">${gymLabel(d.key)}</button>` : ""}` + exList(d);
+` + exList(d);
   } catch (e) { fail(el, e); }
 }
 
@@ -464,7 +424,7 @@ async function loadPlan(force) {
   }
   $("#planSegs").innerHTML = cache.plan.map((s, i) => `<button class="seg ${i === planSel ? "on" : ""}" data-i="${i}">${esc(s.key)} <span style="opacity:.6">${s.day}</span></button>`).join("");
   const sp = cache.plan[planSel];
-  body.innerHTML = (sp.exercises.length ? `<button class="btn startbtn" data-gym="plan">${gymLabel(sp.key)}</button>` : "") + exList(sp);
+  body.innerHTML = exList(sp);
 }
 $("#planSegs").addEventListener("click", e => {
   const b = e.target.closest(".seg"); if (!b) return;
@@ -605,7 +565,7 @@ async function saveSetting(input) {
     Object.assign(old, upd);
     row.outerHTML = setRow(upd);
     delete cache.today; delete cache.plan;
-    toast(`${ex}: saved`);
+    toast(`${ex}: saved, updating Hevy`);
   } catch (e) { toast(e.message); input.value = old[key] ?? ""; }
 }
 $("#setBody").addEventListener("change", e => { if (e.target.matches("input[data-key]")) saveSetting(e.target); });
@@ -627,22 +587,25 @@ const tools = $("#tools");
 $("#openTools").addEventListener("click", () => tools.classList.add("on"));
 $("#closeTools").addEventListener("click", () => tools.classList.remove("on"));
 tools.addEventListener("click", e => { if (e.target === tools) tools.classList.remove("on"); });
-async function runJob(path, btn, label) {
+async function runJob(path, btn, label, body = {}) {
   const log = $("#jobLog");
   document.querySelectorAll(".sheet .btn").forEach(b => b.disabled = true);
   btn.textContent = label + "…";
   log.style.display = "block"; log.textContent = "Working on it. This can take a minute.";
   try {
-    const r = await api(path, {});
+    const r = await api(path, body);
     log.textContent = r.log;
     Object.keys(cache).forEach(k => delete cache[k]); statsData = null;
     toast("Done");
   } catch (e) { log.textContent = e.message; }
   document.querySelectorAll(".sheet .btn").forEach(b => b.disabled = false);
   $("#doSync").textContent = "Sync from Hevy"; $("#doTrain").textContent = "Retrain models";
+  $("#doHevy").textContent = "Send targets to Hevy"; $("#doPreview").textContent = "Preview";
 }
 $("#doSync").addEventListener("click", e => runJob("sync", e.target, "Syncing"));
 $("#doTrain").addEventListener("click", e => runJob("train", e.target, "Training"));
+$("#doHevy").addEventListener("click", e => runJob("hevy/push", e.target, "Sending"));
+$("#doPreview").addEventListener("click", e => runJob("hevy/push", e.target, "Checking", { dry_run: true }));
 
 /* ---------- Coach ---------- */
 const COACH_KEY = "zr_coach";
@@ -736,222 +699,8 @@ $("#v-coach").addEventListener("click", e => {
   if (e.target.closest("#clearChat")) { chat = []; saveJSON(COACH_KEY, chat); renderChat(); }
 });
 
-/* ---------- Gym mode ---------- */
-const GYM_KEY = "zr_gym";
-const todayStr = () => new Date().toLocaleDateString("en-CA");
-let gym = loadJSON(GYM_KEY, null);
-if (gym && gym.date !== todayStr()) gym = null;   // yesterday's unfinished workout is dropped
-let wakeLock = null, tick = null, restRang = false;
-const lastSets = {};
-
-function gymLabel(key) { return gym && gym.key === key && !gym.finished ? "Resume workout" : "Start workout"; }
-function saveGym() { saveJSON(GYM_KEY, gym); }
-
-document.addEventListener("click", e => {
-  const b = e.target.closest("[data-gym]"); if (!b) return;
-  const split = b.dataset.gym === "today" ? cache.today : cache.plan[planSel];
-  if (!gym || gym.key !== split.key || gym.finished) {
-    gym = { key: split.key, date: todayStr(), exercises: split.exercises, idx: 0,
-            done: split.exercises.map(x => Array(x.sets).fill(false)), restEnd: null, restFor: 0 };
-    saveGym();
-  }
-  openGym();
-});
-
-async function openGym() {
-  $("#gym").classList.add("on");
-  document.body.style.overflow = "hidden";
-  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
-  clearInterval(tick); tick = setInterval(updateTimer, 250);
-  renderGym();
-}
-function endGym() {
-  // Stop this workout completely (started by accident, or done for today).
-  // Nothing is deleted from Hevy or your history; it just stops tracking it here.
-  gym = null;
-  try { localStorage.removeItem(GYM_KEY); } catch {}
-  closeGym();
-  toast("Workout ended");
-}
-function closeGym() {
-  $("#gym").classList.remove("on");
-  document.body.style.overflow = "";
-  clearInterval(tick);
-  try { wakeLock?.release(); } catch {} wakeLock = null;
-  load(current, true);
-}
-document.addEventListener("visibilitychange", async () => {
-  if (document.visibilityState === "visible" && $("#gym").classList.contains("on")) {
-    try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
-  }
-});
-
-const restDefault = ex => 180;   // 3 min rest for every exercise
-const restFor = ex => loadJSON("zr_rest", {})[ex.exercise] ?? restDefault(ex);
-function setRestFor(ex, secs) { const r = loadJSON("zr_rest", {}); r[ex.exercise] = secs; saveJSON("zr_rest", r); }
-
-/* Plate maths: plates per side for plate-loaded exercises */
-const PLATES = [20, 15, 10, 5, 2.5, 1.25];   // the plates at your gym (no 25s)
-function plateDefaults(name) {
-  const n = name.toLowerCase();
-  if (n.includes("t bar")) return { bar: 0, sides: 1 };
-  if (n.includes("smith")) return { bar: 0, sides: 2 };       // Smith bar isn't counted in your logged weight
-  if (n.includes("barbell")) return { bar: 20, sides: 2 };    // a real barbell counts as 20 kg
-  if (n.includes("leg press")) return { bar: 0, sides: 2 };
-  return null;
-}
-function plateCfg(name) { const d = plateDefaults(name); return d && { ...d, ...(loadJSON("zr_plates", {})[name] || {}) }; }
-function platesFor(total, cfg) {
-  let per = (total - cfg.bar) / cfg.sides;
-  if (per <= 0.001) return { plates: [], short: 0 };
-  const out = [];
-  for (const p of PLATES) while (per >= p - 0.001) { out.push(p); per -= p; }
-  return { plates: out, short: Math.round(per * cfg.sides * 100) / 100 };
-}
-
-function fmtTime(s) { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
-
-function renderGym() {
-  const body = $("#gymBody");
-  const n = gym.exercises.length;
-  const doneSets = gym.done.flat().filter(Boolean).length, allSets = gym.done.flat().length;
-  if (gym.finished) {
-    body.innerHTML = `<div class="g-done"><div class="logo" style="margin:0 auto;width:56px;height:56px;font-size:20px;border-radius:14px">0R</div>
-      <h2>${esc(gym.key)} done</h2><p class="reason">${doneSets} of ${allSets} sets ticked off.</p>
-      <p class="reason">Log it in Hevy as usual. Next time you open the app it syncs on its own and your new targets show up.</p></div>`;
-    $("#gPrev").textContent = "Back"; $("#gNext").textContent = "Close";
-    return;
-  }
-  const i = gym.idx, ex = gym.exercises[i], done = gym.done[i];
-  const cfg = plateCfg(ex.exercise);
-  let plateHTML = "";
-  if (cfg) {
-    const r = platesFor(ex.weight, cfg);
-    const label = cfg.sides === 2 ? "Each side" : "On the bar";
-    plateHTML = `<div class="g-card"><h4>Plates · ${label}</h4>
-      <div class="plates">${r.plates.length ? r.plates.map(p => `<span class="plate p${String(p).replace(".", "_")}">${fmt(p)}</span>`).join("") : '<span class="reason" style="margin:0">Just the bar</span>'}</div>
-      ${r.short ? `<p class="reason" style="color:var(--warn)">Can't make it exactly: ${fmt(r.short)} kg short with standard plates.</p>` : ""}
-      <div class="platecfg">Bar <input type="number" inputmode="decimal" step="0.5" value="${cfg.bar}" data-pc="bar"> kg
-        <select data-pc="sides"><option value="2" ${cfg.sides === 2 ? "selected" : ""}>both sides</option><option value="1" ${cfg.sides === 1 ? "selected" : ""}>one side</option></select></div></div>`;
-  }
-  body.innerHTML = `
-    <div class="g-top">
-      <button class="iconbtn" id="gExit" aria-label="Exit gym mode">✕</button>
-      <span class="grow">${esc(gym.key)} · ${i + 1} of ${n}</span>
-      <span class="pill">${doneSets}/${allSets} sets</span>
-      <button class="iconbtn" id="gEnd" style="color:var(--bad);white-space:nowrap">End</button>
-    </div>
-    <div class="g-bar"><i style="width:${allSets ? doneSets / allSets * 100 : 0}%"></i></div>
-    <h2 class="g-name">${esc(ex.exercise)}</h2>
-    ${ex.increase ? '<span class="pill up">Weight up today</span>' : ""}
-    <div class="g-target">${fmt(ex.weight)}<small>kg</small> × ${esc(ex.reps)}</div>
-    <p class="g-last" id="gLast">Last time: …</p>
-    <p class="reason">${esc(cleanLead(ex.reason))}</p>
-    <div class="g-sets">${done.map((d, k) => `<button class="g-set ${d ? "done" : ""}" data-set="${k}">${d ? "✓ " : ""}Set ${k + 1}<span>${fmt(ex.weight)} × ${esc(ex.reps)}</span></button>`).join("")}</div>
-    <div class="g-card"><h4>Rest timer</h4>
-      <div class="g-timer" id="gTimer">
-        <span class="g-time" id="gTime">${fmtTime(gym.restEnd ? (gym.restEnd - Date.now()) / 1000 : restFor(ex))}</span>
-        <button data-rest="-15">−15</button><button data-rest="15">+15</button><button data-rest="go" id="gRestBtn">${gym.restEnd ? "Skip" : "Start"}</button>
-      </div>
-      <p class="reason" style="margin:6px 0 0" id="gRestNote">${gym.restEnd ? "Resting…" : `Starts by itself when you tick a set (${fmtTime(restFor(ex))}).`}</p>
-    </div>
-    ${plateHTML}`;
-  $("#gPrev").textContent = i === 0 ? "Exit" : "Back";
-  $("#gNext").textContent = i === n - 1 ? "Finish workout" : "Next exercise";
-  showLast(ex.exercise);
-  updateTimer();
-}
-
-async function showLast(name) {
-  const el = () => $("#gLast");
-  try {
-    if (!lastSets[name]) {
-      const d = await api("stats?exercise=" + encodeURIComponent(name));
-      const s = d.sessions[d.sessions.length - 1];
-      lastSets[name] = s ? `Last time: ${s.sets.map(([w, r]) => `${fmt(w)}×${r}`).join("  ")}` : "No history yet";
-    }
-    if (el() && gym && gym.exercises[gym.idx]?.exercise === name) el().textContent = lastSets[name];
-  } catch { if (el()) el().textContent = "Last time: not available"; }
-}
-
-function startRest(secs) { gym.restEnd = Date.now() + secs * 1000; gym.restFor = secs; restRang = false; saveGym(); renderGym(); }
-function stopRest() { gym.restEnd = null; saveGym(); renderGym(); }
-
-function beep() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    [0, 0.35].forEach(t => {
-      const o = ctx.createOscillator(), g = ctx.createGain();
-      o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
-      g.gain.setValueAtTime(0.25, ctx.currentTime + t); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.3);
-      o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + 0.3);
-    });
-  } catch {}
-  try { navigator.vibrate?.([250, 120, 250]); } catch {}
-}
-
-function updateTimer() {
-  if (!gym || !gym.restEnd) return;
-  const left = (gym.restEnd - Date.now()) / 1000;
-  const t = $("#gTime"), box = $("#gTimer"), note = $("#gRestNote");
-  if (!t) return;
-  if (left > 0) { t.textContent = fmtTime(left); box.classList.remove("over"); }
-  else {
-    t.textContent = "+" + fmtTime(-left); box.classList.add("over");
-    if (note) note.textContent = "Rest's over. Next set!";
-    if (!restRang) { restRang = true; beep(); }
-  }
-}
-
-$("#gym").addEventListener("click", e => {
-  if (e.target.closest("#gExit")) { closeGym(); return; }
-  const endBtn = e.target.closest("#gEnd");
-  if (endBtn) {
-    // Two taps so a stray touch can't throw away a workout
-    if (endBtn.dataset.armed) { endGym(); return; }
-    endBtn.dataset.armed = "1"; endBtn.textContent = "Tap again";
-    endBtn.style.background = "var(--bad-bg)";
-    setTimeout(() => { if (endBtn.isConnected) { delete endBtn.dataset.armed; endBtn.textContent = "End"; endBtn.style.background = ""; } }, 3000);
-    return;
-  }
-  const setBtn = e.target.closest("[data-set]");
-  if (setBtn) {
-    const ex = gym.exercises[gym.idx], k = +setBtn.dataset.set;
-    gym.done[gym.idx][k] = !gym.done[gym.idx][k];
-    const nowDone = gym.done[gym.idx][k];
-    const lastOfAll = gym.idx === gym.exercises.length - 1 && gym.done[gym.idx].every(Boolean);
-    saveGym();
-    if (nowDone && !lastOfAll) startRest(restFor(ex)); else renderGym();
-    return;
-  }
-  const rb = e.target.closest("[data-rest]");
-  if (rb) {
-    const ex = gym.exercises[gym.idx], v = rb.dataset.rest;
-    if (v === "go") { gym.restEnd ? stopRest() : startRest(restFor(ex)); return; }
-    const delta = +v;
-    if (gym.restEnd) { gym.restEnd += delta * 1000; restRang = false; saveGym(); }
-    setRestFor(ex, Math.max(15, restFor(ex) + delta));
-    if (!gym.restEnd) renderGym(); else updateTimer();
-  }
-});
-$("#gym").addEventListener("change", e => {
-  const el = e.target.closest("[data-pc]"); if (!el) return;
-  const name = gym.exercises[gym.idx].exercise, all = loadJSON("zr_plates", {});
-  const cfg = plateCfg(name);
-  cfg[el.dataset.pc] = el.dataset.pc === "sides" ? +el.value : Math.max(0, +el.value || 0);
-  all[name] = { bar: cfg.bar, sides: cfg.sides }; saveJSON("zr_plates", all);
-  renderGym();
-});
-$("#gPrev").addEventListener("click", () => {
-  if (gym.finished) { gym.finished = false; gym.idx = gym.exercises.length - 1; saveGym(); renderGym(); return; }
-  if (gym.idx === 0) { closeGym(); return; }
-  gym.idx--; gym.restEnd = null; saveGym(); renderGym(); window.scrollTo(0, 0); $("#gym").scrollTo(0, 0);
-});
-$("#gNext").addEventListener("click", () => {
-  if (gym.finished) { closeGym(); return; }
-  if (gym.idx === gym.exercises.length - 1) { gym.finished = true; gym.restEnd = null; saveGym(); renderGym(); return; }
-  gym.idx++; saveGym(); renderGym(); $("#gym").scrollTo(0, 0);
-});
+/* Gym mode was removed; clear a workout left over from it */
+try { localStorage.removeItem("zr_gym"); } catch {}
 
 /* ---------- Auto-sync with Hevy ---------- */
 let syncing = false;
@@ -963,8 +712,7 @@ async function autoSync() {
     const r = await api("autosync", {});
     if (r.changed) {
       Object.keys(cache).forEach(k => delete cache[k]); statsData = null;
-      Object.keys(lastSets).forEach(k => delete lastSets[k]);
-      if (!$("#gym").classList.contains("on")) load(current, true);
+      load(current, true);
       toast("New workout synced from Hevy");
     }
   } catch {}
@@ -978,7 +726,6 @@ async function boot() {
   catch (e) { if (e.message !== "PIN needed") fail($("#v-today"), e); return; }
   const v = store.get("zr_view");
   go(TITLES[v] ? v : "today");
-  if (gym && !gym.finished) openGym();   // phone locked or page reloaded mid-workout: pick up where you left off
   autoSync();
 }
 boot();

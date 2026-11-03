@@ -7,6 +7,7 @@ Flow:
   3. Run the CSV trend engine to generate next targets
   4. Log the targets (and push them to your phone if ntfy is set up, see notify.py)
   5. Auto-retrain ML models if threshold reached
+  6. Write the new targets into the Hevy routines (hevy_routines.py)
 """
 
 import requests
@@ -417,6 +418,10 @@ def _sync():
         auto_retrain_if_needed()
         
         save_last_processed_id(workout_id)
+
+    # 6. Put the new targets straight into the Hevy routines
+    from hevy_routines import push_targets_safely
+    push_targets_safely()
 
 
 if __name__ == "__main__":

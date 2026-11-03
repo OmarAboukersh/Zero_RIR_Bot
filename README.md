@@ -25,7 +25,7 @@ Your own website for the bot: today's targets, all 4 days, stats charts, the wee
 - Away from home: through a Cloudflare Tunnel (route `gym.<your-domain>` → `http://localhost:8000`), protected by a Cloudflare Access email-code login
 - Add it to your home screen (Share → Add to Home Screen) and it opens like an app
 
-**Gym mode:** tap **Start workout** on the Today or All days tab. One exercise at a time with a big target, last session's sets, a button per set to tick it off, a rest timer that starts by itself when you tick a set (3 min; +15/−15 is remembered per exercise), a beep and vibration when rest is over, and a plate calculator for plate-loaded exercises using the gym's plates (20, 15, 10, 5, 2.5, 1.25 kg; Smith machine bar counted as 0, barbell as 20, both editable per exercise). The screen stays on, and progress survives the phone locking or the page reloading. **End** (tap twice) stops a workout you started by accident.
+**Targets straight into Hevy:** after every sync with a new workout (and after any settings change), `hevy_routines.py` writes the new targets into your four Hevy routines ("Push day", "Pull day", "push + quad", "Pull + ham"): the working sets of each tracked exercise get the target weight, reps and number of sets, and a 🤖 line in the exercise notes says why. Warm-up sets, your own notes, exercise order, rest times, supersets and untracked exercises are left alone, and a permanently replaced exercise (`EXERCISE_REPLACEMENTS`) is swapped for its replacement once you've logged it in Hevy. Before writing, the routines are backed up to `routines_backup/`, and only routines that actually changed are sent. In the app: Sync → **Send targets to Hevy**, or **Preview** to see the changes without writing. Command line: `python hevy_routines.py --dry-run`, or `--restore routines_backup/<file>.json` to put a backup back. Turn it off with `HEVY_ROUTINE_SYNC=off`.
 
 **AI coach (Coach tab):** chat with a coach that sees your current targets for all 4 days, your last 4 sessions of every exercise (sets, RPE, notes), your settings and the weekly summary, plus the progression rules. Ask about injuries, breaks, stalled lifts or RPE. Uses Google's Gemini API free tier: put `GEMINI_API_KEY` in `.env` (free key from aistudio.google.com/apikey) and restart. The provider lives in one function in `coach.py`, so it can be swapped. Your training data is sent to Gemini with each question.
 
@@ -81,4 +81,4 @@ Changes are saved in `exercise_settings.json` and take effect immediately; the d
 - pytest + GitHub Actions, Docker
 - Cloudflare Tunnel + Access
 - ntfy (optional phone notifications)
-- Hevy API (Data Ingestion)
+- Hevy API (reads workouts, writes routines)

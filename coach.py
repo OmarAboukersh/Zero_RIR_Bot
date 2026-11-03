@@ -130,6 +130,13 @@ class _TryNext(Exception):
     """This model can't answer right now; try the next one."""
 
 
+def _google_message(r):
+    try:
+        return str(r.json().get("error", {}).get("message", ""))[:160]
+    except ValueError:
+        return r.text[:160]
+
+
 def _call_model(model, body, api_key, timeout):
     try:
         r = requests.post(GEMINI_URL.format(model=model), json=body,
@@ -140,11 +147,11 @@ def _call_model(model, body, api_key, timeout):
         raise CoachError(f"Couldn't reach Gemini ({type(e).__name__}). Check the laptop's internet connection.")
 
     if r.status_code in RETRY_STATUSES:
-        raise _TryNext(f"{model}: busy ({r.status_code})")
+        raise _TryNext(f"{model}: busy ({r.status_code}) {_google_message(r)}")
     if r.status_code == 429:
-        raise _TryNext(f"{model}: free limit reached")
+        raise _TryNext(f"{model}: free limit reached (429) {_google_message(r)}")
     if r.status_code == 404:
-        raise _TryNext(f"{model}: unknown model")
+        raise _TryNext(f"{model}: unknown model (404) {_google_message(r)}")
     if r.status_code in (400, 401, 403):
         detail = ""
         try:
@@ -155,7 +162,7 @@ def _call_model(model, body, api_key, timeout):
             raise CoachError("Gemini rejected the API key. Check GEMINI_API_KEY in .env and restart the app.")
         raise CoachError(f"Gemini couldn't handle that request: {detail or r.status_code}")
     if not r.ok:
-        raise _TryNext(f"{model}: error {r.status_code}")
+        raise _TryNext(f"{model}: error {r.status_code} {_google_message(r)}")
 
     data = r.json()
     candidates = data.get("candidates") or []
@@ -202,7 +209,7 @@ def ask_llm(system_text, messages, api_key=None, model=None, timeout=45, retry_w
         raise CoachError(f"Gemini doesn't know the model '{first}'. Set GEMINI_MODEL in .env to a current model name.")
     if all("empty answer" in p for p in problems):
         raise CoachError("Gemini sent an empty answer. Try again.")
-    raise CoachError("Gemini is overloaded right now (that's on Google's side). Try again in a minute.")
+    raise CoachError("Gemini couldn't answer right now. Try again in a minute. What Google said: " + " | ".join(dict.fromkeys(problems)))
 
 
 def ask_coach(messages, context_text, **kwargs):

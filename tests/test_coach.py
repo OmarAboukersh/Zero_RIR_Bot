@@ -61,11 +61,11 @@ def test_missing_key_is_reported(monkeypatch):
 
 @pytest.mark.parametrize("status,payload,msg", [
     (429, {}, "free limit"),
-    (503, {}, "overloaded"),
+    (503, {"error": {"message": "The model is overloaded."}}, "The model is overloaded"),
     (403, {"error": {"message": "denied"}}, "rejected the API key"),
     (400, {"error": {"message": "API key not valid"}}, "rejected the API key"),
     (404, {}, "doesn't know the model"),
-    (500, {}, "overloaded"),
+    (500, {}, "couldn.t answer right now"),
     (200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}}, "SAFETY"),
     (200, reply(""), "empty answer"),
 ])

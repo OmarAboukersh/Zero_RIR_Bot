@@ -8,7 +8,7 @@ Zero_RIR_Bot is a Python-based hypertrophy and strength programming engine desig
 ## Core Features
 
 - **Zero-Friction Logging:** Connects directly to the Hevy API to fetch completed workout data automatically. It smartly syncs up to your last 10 missing workouts to guarantee no data is ever dropped if you skip a sync day.
-- **Your Own Web App:** `web_app.py` serves a phone-friendly website with your targets, stats charts, weekly summary, settings and a gym mode, reachable from anywhere through a Cloudflare Tunnel behind Cloudflare Access login (see below).
+- **Your Own Web App:** `web_app.py` serves a phone-friendly website with your targets, stats charts, weekly summary, settings and an AI coach, writes the targets into your Hevy routines, and is reachable from anywhere through a Cloudflare Tunnel behind Cloudflare Access login (see below).
 - **Smart Autocorrect:** Don't worry about spelling. The bot uses a fuzzy matching engine (`difflib`) to instantly autocorrect typos in your commands (e.g. "dumbells" auto-corrects to "Dumbbell").
 - **Burnout Set Protection:** If you do an exercise twice in the same workout (e.g. main heavy sets followed by later burnout sets), the engine strictly prioritizes your main working sets and ignores the light burnout sets for progression tracking.
 - **Deload Detection:** Tag a workout with "deload" in the title or notes, and the bot will cleanly ignore the workout for progression tracking to prevent polluting the ML dataset. Untagged deloads are caught automatically: any lift that drops below 80% of its last working weight and then recovers the next session is excluded (a whole workout is excluded when most of its lifts do this).

@@ -387,13 +387,15 @@ def api_hevy_push():
     dry = bool((request.get_json(silent=True) or {}).get("dry_run"))
     if not _job_lock.acquire(blocking=False):
         abort(409, description="A sync is running. Try again in a moment.")
+    result = {}
     try:
-        log = _run_captured(lambda: hevy_routines.push_targets(dry_run=dry))
+        log = _run_captured(lambda: result.update(hevy_routines.push_targets(dry_run=dry)))
     except hevy_routines.HevyError as e:
         return jsonify(error=str(e)), 400
     finally:
         _job_lock.release()
-    return jsonify(ok=True, log=log or "Nothing to do.")
+    return jsonify(ok=True, log=log or "Nothing to do.", updated=result.get("updated", []),
+                   unchanged=result.get("unchanged", []), warnings=result.get("warnings", []))
 
 
 def coach_context():

@@ -92,3 +92,13 @@ def test_coach_without_key_explains_setup(client, monkeypatch):
     assert client.get("/api/coach/status").get_json() == {"enabled": False}
     r = client.post("/api/coach", json={"messages": [{"role": "user", "text": "hi"}]})
     assert r.status_code == 400 and r.get_json()["no_key"] is True
+
+
+def test_send_to_hevy_reports_what_changed(client, monkeypatch):
+    import hevy_routines
+    monkeypatch.setattr(hevy_routines, "push_targets", lambda dry_run=False: (
+        print("🏋️ Updated Hevy routines: Push day") or
+        {"updated": ["Push day"], "unchanged": ["Pull day"], "warnings": ["No Hevy routine called \"Pull + ham\""]}))
+    d = client.post("/api/hevy/push", json={}).get_json()
+    assert d["updated"] == ["Push day"] and d["unchanged"] == ["Pull day"] and "Pull + ham" in d["warnings"][0]
+    assert "Updated Hevy routines" in d["log"]

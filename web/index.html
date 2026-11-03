@@ -45,10 +45,21 @@ header { position: sticky; top: 0; z-index: 5; background: var(--bg);
 header .wrap { display: flex; align-items: center; gap: 10px; }
 .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--accent-ink);
   display: grid; place-items: center; font-weight: 800; font-size: 13px; letter-spacing: -.5px; }
-header h1 { font-size: 18px; margin: 0; flex: 1; font-weight: 650; }
+header h1 { font-size: 18px; margin: 0; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 650; }
+@media (max-width: 370px) { header .logo { display: none; } header h1 { visibility: hidden; } header .wrap { gap: 6px; } .hevybtn { padding: 0 10px; } }
 .iconbtn { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
   height: 36px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 14px; }
 .iconbtn:active { transform: scale(.97); }
+.hevybtn { height: 38px; padding: 0 14px; display: inline-flex; align-items: center; gap: 6px; font-size: 14px; border-radius: 10px; }
+.hevybtn:active { transform: scale(.97); }
+.spin svg { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.hevy-result { position: fixed; left: 16px; right: 16px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 25; max-width: 608px; margin: 0 auto;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; box-shadow: 0 10px 30px rgba(0,0,0,.35); display: none; }
+.hevy-result.on { display: block; }
+.hevy-result b { display: block; margin-bottom: 4px; }
+.hevy-result p { margin: 4px 0 0; font-size: 13.5px; color: var(--muted); }
+.hevy-result .warn { color: var(--warn); }
 
 nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; background: var(--card);
   border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
@@ -198,7 +209,13 @@ pre.joblog { background: var(--card2); border-radius: 10px; padding: 10px; font-
     <button class="iconbtn" id="refresh" aria-label="Refresh">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
     </button>
-    <button class="iconbtn" id="openTools">Sync</button>
+    <button class="iconbtn" id="openTools" aria-label="More: sync, retrain, preview">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+    </button>
+    <button class="btn hevybtn" id="sendHevy">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      <span>Send to Hevy</span>
+    </button>
   </div>
 </header>
 
@@ -233,15 +250,14 @@ pre.joblog { background: var(--card2); border-radius: 10px; padding: 10px; font-
 
 <div class="sheet-bg" id="tools">
   <div class="sheet">
-    <h3>Update your data</h3>
+    <h3>More</h3>
     <p>Sync pulls your latest workouts from Hevy, then writes the new targets into your Hevy routines. That also happens by itself after each workout and when you change a setting.</p>
     <div class="row">
       <button class="btn" id="doSync">Sync from Hevy</button>
       <button class="btn ghost" id="doTrain">Retrain models</button>
     </div>
     <div class="row">
-      <button class="btn ghost" id="doHevy">Send targets to Hevy</button>
-      <button class="btn ghost" id="doPreview">Preview</button>
+      <button class="btn ghost" id="doPreview" style="flex:1">Preview Hevy changes (writes nothing)</button>
     </div>
     <button class="btn ghost" style="width:100%" id="closeTools">Close</button>
     <pre class="joblog" id="jobLog"></pre>
@@ -257,6 +273,7 @@ pre.joblog { background: var(--card2); border-radius: 10px; padding: 10px; font-
   </form>
 </div>
 
+<div class="hevy-result" id="hevyResult" role="status"></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -600,11 +617,33 @@ async function runJob(path, btn, label, body = {}) {
   } catch (e) { log.textContent = e.message; }
   document.querySelectorAll(".sheet .btn").forEach(b => b.disabled = false);
   $("#doSync").textContent = "Sync from Hevy"; $("#doTrain").textContent = "Retrain models";
-  $("#doHevy").textContent = "Send targets to Hevy"; $("#doPreview").textContent = "Preview";
+  $("#doPreview").textContent = "Preview Hevy changes (writes nothing)";
 }
 $("#doSync").addEventListener("click", e => runJob("sync", e.target, "Syncing"));
+
+/* ---------- Send to Hevy (the main button) ---------- */
+let hevyBusy = false;
+function showHevyResult(html) {
+  const box = $("#hevyResult"); box.innerHTML = html; box.classList.add("on");
+  clearTimeout(showHevyResult._t); showHevyResult._t = setTimeout(() => box.classList.remove("on"), 9000);
+}
+$("#hevyResult").addEventListener("click", () => $("#hevyResult").classList.remove("on"));
+$("#sendHevy").addEventListener("click", async () => {
+  if (hevyBusy) return;
+  hevyBusy = true;
+  const btn = $("#sendHevy"), label = $("#sendHevy span");
+  btn.disabled = true; label.textContent = "Sending…";
+  try {
+    const r = await api("hevy/push", {});
+    const warn = (r.warnings || []).map(w => `<p class="warn">⚠️ ${esc(w)}</p>`).join("");
+    if (r.updated.length) showHevyResult(`<b>✓ Hevy updated</b><p>${esc(r.updated.join(", "))} now ${r.updated.length > 1 ? "have" : "has"} your new targets. Open Hevy and start the routine.</p>${warn}`);
+    else showHevyResult(`<b>✓ Hevy is already up to date</b><p>Your routines already match your targets.</p>${warn}`);
+  } catch (e) {
+    showHevyResult(`<b>Couldn't update Hevy</b><p class="warn">${esc(e.message)}</p>`);
+  }
+  btn.disabled = false; label.textContent = "Send to Hevy"; hevyBusy = false;
+});
 $("#doTrain").addEventListener("click", e => runJob("train", e.target, "Training"));
-$("#doHevy").addEventListener("click", e => runJob("hevy/push", e.target, "Sending"));
 $("#doPreview").addEventListener("click", e => runJob("hevy/push", e.target, "Checking", { dry_run: true }));
 
 /* ---------- Coach ---------- */
@@ -707,7 +746,7 @@ let syncing = false;
 async function autoSync() {
   if (syncing) return;
   syncing = true;
-  const b = $("#openTools"); b.textContent = "Syncing…";
+  const b = $("#refresh"); b.classList.add("spin"); b.title = "Checking Hevy for new workouts…";
   try {
     const r = await api("autosync", {});
     if (r.changed) {
@@ -716,7 +755,7 @@ async function autoSync() {
       toast("New workout synced from Hevy");
     }
   } catch {}
-  b.textContent = "Sync"; syncing = false;
+  b.classList.remove("spin"); b.title = ""; syncing = false;
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") autoSync(); });
 
